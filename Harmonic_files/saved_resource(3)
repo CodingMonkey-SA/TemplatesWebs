@@ -1,0 +1,4476 @@
+/* Detect-zoom
+ * -----------
+ * Cross Browser Zoom and Pixel Ratio Detector
+ * Version 1.0.4 | Apr 1 2013
+ * dual-licensed under the WTFPL and MIT license
+ * Maintained by https://github/tombigel
+ * Original developer https://github.com/yonran
+ */
+
+//AMD and CommonJS initialization copied from https://github.com/zohararad/audio5js
+(function (root, ns, factory) {
+    "use strict";
+
+    if (typeof (module) !== 'undefined' && module.exports) { // CommonJS
+        module.exports = factory(ns, root);
+    } else if (typeof (define) === 'function' && define.amd) { // AMD
+        define("factory", function () {
+            return factory(ns, root);
+        });
+    } else {
+        root[ns] = factory(ns, root);
+    }
+
+}(window, 'detectZoom', function () {
+
+    /**
+     * Use devicePixelRatio if supported by the browser
+     * @return {Number}
+     * @private
+     */
+    var devicePixelRatio = function () {
+        return window.devicePixelRatio || 1;
+    };
+
+    /**
+     * Fallback function to set default values
+     * @return {Object}
+     * @private
+     */
+    var fallback = function () {
+        return {
+            zoom: 1,
+            devicePxPerCssPx: 1
+        };
+    };
+    /**
+     * IE 8 and 9: no trick needed!
+     * TODO: Test on IE10 and Windows 8 RT
+     * @return {Object}
+     * @private
+     **/
+    var ie8 = function () {
+        var zoom = Math.round((screen.deviceXDPI / screen.logicalXDPI) * 100) / 100;
+        return {
+            zoom: zoom,
+            devicePxPerCssPx: zoom * devicePixelRatio()
+        };
+    };
+
+    /**
+     * For IE10 we need to change our technique again...
+     * thanks https://github.com/stefanvanburen
+     * @return {Object}
+     * @private
+     */
+    var ie10 = function () {
+        var zoom = Math.round((document.documentElement.offsetHeight / window.innerHeight) * 100) / 100;
+        return {
+            zoom: zoom,
+            devicePxPerCssPx: zoom * devicePixelRatio()
+        };
+    };
+
+    /**
+     * Mobile WebKit
+     * the trick: window.innerWIdth is in CSS pixels, while
+     * screen.width and screen.height are in system pixels.
+     * And there are no scrollbars to mess up the measurement.
+     * @return {Object}
+     * @private
+     */
+    var webkitMobile = function () {
+        var deviceWidth = (Math.abs(window.orientation) == 90) ? screen.height : screen.width;
+        var zoom = deviceWidth / window.innerWidth;
+        return {
+            zoom: zoom,
+            devicePxPerCssPx: zoom * devicePixelRatio()
+        };
+    };
+
+    /**
+     * Desktop Webkit
+     * the trick: an element's clientHeight is in CSS pixels, while you can
+     * set its line-height in system pixels using font-size and
+     * -webkit-text-size-adjust:none.
+     * device-pixel-ratio: http://www.webkit.org/blog/55/high-dpi-web-sites/
+     *
+     * Previous trick (used before http://trac.webkit.org/changeset/100847):
+     * documentElement.scrollWidth is in CSS pixels, while
+     * document.width was in system pixels. Note that this is the
+     * layout width of the document, which is slightly different from viewport
+     * because document width does not include scrollbars and might be wider
+     * due to big elements.
+     * @return {Object}
+     * @private
+     */
+    var webkit = function () {
+        var important = function (str) {
+            return str.replace(/;/g, " !important;");
+        };
+
+        var div = document.createElement('div');
+        div.innerHTML = "1<br>2<br>3<br>4<br>5<br>6<br>7<br>8<br>9<br>0";
+        div.setAttribute('style', important('font: 100px/1em sans-serif; -webkit-text-size-adjust: none; text-size-adjust: none; height: auto; width: 1em; padding: 0; overflow: visible;'));
+
+        // The container exists so that the div will be laid out in its own flow
+        // while not impacting the layout, viewport size, or display of the
+        // webpage as a whole.
+        // Add !important and relevant CSS rule resets
+        // so that other rules cannot affect the results.
+        var container = document.createElement('div');
+        container.setAttribute('style', important('width:0; height:0; overflow:hidden; visibility:hidden; position: absolute;'));
+        container.appendChild(div);
+
+        document.body.appendChild(container);
+        var zoom = 1000 / div.clientHeight;
+        zoom = Math.round(zoom * 100) / 100;
+        document.body.removeChild(container);
+
+        return{
+            zoom: zoom,
+            devicePxPerCssPx: zoom * devicePixelRatio()
+        };
+    };
+
+    /**
+     * no real trick; device-pixel-ratio is the ratio of device dpi / css dpi.
+     * (Note that this is a different interpretation than Webkit's device
+     * pixel ratio, which is the ratio device dpi / system dpi).
+     *
+     * Also, for Mozilla, there is no difference between the zoom factor and the device ratio.
+     *
+     * @return {Object}
+     * @private
+     */
+    var firefox4 = function () {
+        var zoom = mediaQueryBinarySearch('min--moz-device-pixel-ratio', '', 0, 10, 20, 0.0001);
+        zoom = Math.round(zoom * 100) / 100;
+        return {
+            zoom: zoom,
+            devicePxPerCssPx: zoom
+        };
+    };
+
+    /**
+     * Firefox 18.x
+     * Mozilla added support for devicePixelRatio to Firefox 18,
+     * but it is affected by the zoom level, so, like in older
+     * Firefox we can't tell if we are in zoom mode or in a device
+     * with a different pixel ratio
+     * @return {Object}
+     * @private
+     */
+    var firefox18 = function () {
+        return {
+            zoom: firefox4().zoom,
+            devicePxPerCssPx: devicePixelRatio()
+        };
+    };
+
+    /**
+     * works starting Opera 11.11
+     * the trick: outerWidth is the viewport width including scrollbars in
+     * system px, while innerWidth is the viewport width including scrollbars
+     * in CSS px
+     * @return {Object}
+     * @private
+     */
+    var opera11 = function () {
+        var zoom = window.top.outerWidth / window.top.innerWidth;
+        zoom = Math.round(zoom * 100) / 100;
+        return {
+            zoom: zoom,
+            devicePxPerCssPx: zoom * devicePixelRatio()
+        };
+    };
+
+    /**
+     * Use a binary search through media queries to find zoom level in Firefox
+     * @param property
+     * @param unit
+     * @param a
+     * @param b
+     * @param maxIter
+     * @param epsilon
+     * @return {Number}
+     */
+    var mediaQueryBinarySearch = function (property, unit, a, b, maxIter, epsilon) {
+        var matchMedia;
+        var head, style, div;
+        if (window.matchMedia) {
+            matchMedia = window.matchMedia;
+        } else {
+            head = document.getElementsByTagName('head')[0];
+            style = document.createElement('style');
+            head.appendChild(style);
+
+            div = document.createElement('div');
+            div.className = 'mediaQueryBinarySearch';
+            div.style.display = 'none';
+            document.body.appendChild(div);
+
+            matchMedia = function (query) {
+                style.sheet.insertRule('@media ' + query + '{.mediaQueryBinarySearch ' + '{text-decoration: underline} }', 0);
+                var matched = getComputedStyle(div, null).textDecoration == 'underline';
+                style.sheet.deleteRule(0);
+                return {matches: matched};
+            };
+        }
+        var ratio = binarySearch(a, b, maxIter);
+        if (div) {
+            head.removeChild(style);
+            document.body.removeChild(div);
+        }
+        return ratio;
+
+        function binarySearch(a, b, maxIter) {
+            var mid = (a + b) / 2;
+            if (maxIter <= 0 || b - a < epsilon) {
+                return mid;
+            }
+            var query = "(" + property + ":" + mid + unit + ")";
+            if (matchMedia(query).matches) {
+                return binarySearch(mid, b, maxIter - 1);
+            } else {
+                return binarySearch(a, mid, maxIter - 1);
+            }
+        }
+    };
+
+    /**
+     * Generate detection function
+     * @private
+     */
+    var detectFunction = (function () {
+        var func = fallback;
+        //IE8+
+        if (!isNaN(screen.logicalXDPI) && !isNaN(screen.systemXDPI)) {
+            func = ie8;
+        }
+        // IE10+ / Touch
+        else if (window.navigator.msMaxTouchPoints) {
+            func = ie10;
+        }
+        //Mobile Webkit
+        else if ('orientation' in window && typeof document.body.style.webkitMarquee === 'string') {
+            func = webkitMobile;
+        }
+        //WebKit
+        else if (typeof document.body.style.webkitMarquee === 'string') {
+            func = webkit;
+        }
+        //Opera
+        else if (navigator.userAgent.indexOf('Opera') >= 0) {
+            func = opera11;
+        }
+        //Last one is Firefox
+        //FF 18.x
+        else if (window.devicePixelRatio) {
+            func = firefox18;
+        }
+        //FF 4.0 - 17.x
+        else if (firefox4().zoom > 0.001) {
+            func = firefox4;
+        }
+
+        return func;
+    }());
+
+
+    return ({
+
+        /**
+         * Ratios.zoom shorthand
+         * @return {Number} Zoom level
+         */
+        zoom: function () {
+            return detectFunction().zoom;
+        },
+
+        /**
+         * Ratios.devicePxPerCssPx shorthand
+         * @return {Number} devicePxPerCssPx level
+         */
+        device: function () {
+            return detectFunction().devicePxPerCssPx;
+        }
+    });
+}));
+
+var wpcom_img_zoomer = {
+	zoomed: false,
+	timer: null,
+	interval: 1000, // zoom polling interval in millisecond
+
+	// Should we apply width/height attributes to control the image size?
+	imgNeedsSizeAtts: function( img ) {
+		// Do not overwrite existing width/height attributes.
+		if ( img.getAttribute('width') !== null || img.getAttribute('height') !== null )
+			return false;
+		// Do not apply the attributes if the image is already constrained by a parent element.
+		if ( img.width < img.naturalWidth || img.height < img.naturalHeight )
+			return false;
+		return true;
+	},
+
+	init: function() {
+		var t = this;
+		try{
+			t.zoomImages();
+			t.timer = setInterval( function() { t.zoomImages(); }, t.interval );
+		}
+		catch(e){
+		}
+	},
+
+	stop: function() {
+		if ( this.timer )
+			clearInterval( this.timer );
+	},
+
+	getScale: function() {
+		var scale = detectZoom.device();
+		// Round up to 1.5 or the next integer below the cap.
+		if      ( scale <= 1.0 ) scale = 1.0;
+		else if ( scale <= 1.5 ) scale = 1.5;
+		else if ( scale <= 2.0 ) scale = 2.0;
+		else if ( scale <= 3.0 ) scale = 3.0;
+		else if ( scale <= 4.0 ) scale = 4.0;
+		else                     scale = 5.0;
+		return scale;
+	},
+
+	shouldZoom: function( scale ) {
+		var t = this;
+		// Do not operate on hidden frames.
+		if ( "innerWidth" in window && !window.innerWidth )
+			return false;
+		// Don't do anything until scale > 1
+		if ( scale == 1.0 && t.zoomed == false )
+			return false;
+		return true;
+	},
+
+	zoomImages: function() {
+		var t = this;
+		var scale = t.getScale();
+		if ( ! t.shouldZoom( scale ) ){
+			return;
+		}
+		t.zoomed = true;
+		// Loop through all the <img> elements on the page.
+		var imgs = document.getElementsByTagName("img");
+
+		for ( var i = 0; i < imgs.length; i++ ) {
+			// Wait for original images to load
+			if ( "complete" in imgs[i] && ! imgs[i].complete )
+				continue;
+
+			// Skip images that don't need processing.
+			var imgScale = imgs[i].getAttribute("scale");
+			if ( imgScale == scale || imgScale == "0" )
+				continue;
+
+			// Skip images that have already failed at this scale
+			var scaleFail = imgs[i].getAttribute("scale-fail");
+			if ( scaleFail && scaleFail <= scale )
+				continue;
+
+			// Skip images that have no dimensions yet.
+			if ( ! ( imgs[i].width && imgs[i].height ) )
+				continue;
+
+			// Skip images from Lazy Load plugins
+			if ( ! imgScale && imgs[i].getAttribute("data-lazy-src") && (imgs[i].getAttribute("data-lazy-src") !== imgs[i].getAttribute("src")))
+				continue;
+
+			if ( t.scaleImage( imgs[i], scale ) ) {
+				// Mark the img as having been processed at this scale.
+				imgs[i].setAttribute("scale", scale);
+			}
+			else {
+				// Set the flag to skip this image.
+				imgs[i].setAttribute("scale", "0");
+			}
+		}
+	},
+
+	scaleImage: function( img, scale ) {
+		var t = this;
+		var newSrc = img.src;
+
+		// Skip slideshow images
+		if ( img.parentNode.className.match(/slideshow-slide/) )
+			return false;
+
+		// Scale gravatars that have ?s= or ?size=
+		if ( img.src.match( /^https?:\/\/([^\/]*\.)?gravatar\.com\/.+[?&](s|size)=/ ) ) {
+			newSrc = img.src.replace( /([?&](s|size)=)(\d+)/, function( $0, $1, $2, $3 ) {
+				// Stash the original size
+				var originalAtt = "originals",
+				originalSize = img.getAttribute(originalAtt);
+				if ( originalSize === null ) {
+					originalSize = $3;
+					img.setAttribute(originalAtt, originalSize);
+					if ( t.imgNeedsSizeAtts( img ) ) {
+						// Fix width and height attributes to rendered dimensions.
+						img.width = img.width;
+						img.height = img.height;
+					}
+				}
+				// Get the width/height of the image in CSS pixels
+				var size = img.clientWidth;
+				// Convert CSS pixels to device pixels
+				var targetSize = Math.ceil(img.clientWidth * scale);
+				// Don't go smaller than the original size
+				targetSize = Math.max( targetSize, originalSize );
+				// Don't go larger than the service supports
+				targetSize = Math.min( targetSize, 512 );
+				return $1 + targetSize;
+			});
+		}
+
+		// Scale resize queries (*.files.wordpress.com) that have ?w= or ?h=
+		else if ( img.src.match( /^https?:\/\/([^\/]+)\.files\.wordpress\.com\/.+[?&][wh]=/ ) ) {
+			if ( img.src.match( /[?&]crop/ ) )
+				return false;
+			var changedAttrs = {};
+			var matches = img.src.match( /([?&]([wh])=)(\d+)/g );
+			for ( var i = 0; i < matches.length; i++ ) {
+				var lr = matches[i].split( '=' );
+				var thisAttr = lr[0].replace(/[?&]/g, '' );
+				var thisVal = lr[1];
+
+				// Stash the original size
+				var originalAtt = 'original' + thisAttr, originalSize = img.getAttribute( originalAtt );
+				if ( originalSize === null ) {
+					originalSize = thisVal;
+					img.setAttribute(originalAtt, originalSize);
+					if ( t.imgNeedsSizeAtts( img ) ) {
+						// Fix width and height attributes to rendered dimensions.
+						img.width = img.width;
+						img.height = img.height;
+					}
+				}
+				// Get the width/height of the image in CSS pixels
+				var size = thisAttr == 'w' ? img.clientWidth : img.clientHeight;
+				var naturalSize = ( thisAttr == 'w' ? img.naturalWidth : img.naturalHeight );
+				// Convert CSS pixels to device pixels
+				var targetSize = Math.ceil(size * scale);
+				// Don't go smaller than the original size
+				targetSize = Math.max( targetSize, originalSize );
+				// Don't go bigger unless the current one is actually lacking
+				if ( scale > img.getAttribute("scale") && targetSize <= naturalSize )
+					targetSize = thisVal;
+				// Don't try to go bigger if the image is already smaller than was requested
+				if ( naturalSize < thisVal )
+					targetSize = thisVal;
+				if ( targetSize != thisVal )
+					changedAttrs[ thisAttr ] = targetSize;
+			}
+			var w = changedAttrs.w || false;
+			var h = changedAttrs.h || false;
+
+			if ( w ) {
+				newSrc = img.src.replace(/([?&])w=\d+/g, function( $0, $1 ) {
+					return $1 + 'w=' + w;
+				});
+			}
+			if ( h ) {
+				newSrc = newSrc.replace(/([?&])h=\d+/g, function( $0, $1 ) {
+					return $1 + 'h=' + h;
+				});
+			}
+		}
+
+		// Scale mshots that have width
+		else if ( img.src.match(/^https?:\/\/([^\/]+\.)*(wordpress|wp)\.com\/mshots\/.+[?&]w=\d+/) ) {
+			newSrc = img.src.replace( /([?&]w=)(\d+)/, function($0, $1, $2) {
+				// Stash the original size
+				var originalAtt = 'originalw', originalSize = img.getAttribute(originalAtt);
+				if ( originalSize === null ) {
+					originalSize = $2;
+					img.setAttribute(originalAtt, originalSize);
+					if ( t.imgNeedsSizeAtts( img ) ) {
+						// Fix width and height attributes to rendered dimensions.
+						img.width = img.width;
+						img.height = img.height;
+					}
+				}
+				// Get the width of the image in CSS pixels
+				var size = img.clientWidth;
+				// Convert CSS pixels to device pixels
+				var targetSize = Math.ceil(size * scale);
+				// Don't go smaller than the original size
+				targetSize = Math.max( targetSize, originalSize );
+				// Don't go bigger unless the current one is actually lacking
+				if ( scale > img.getAttribute("scale") && targetSize <= img.naturalWidth )
+					targetSize = $2;
+				if ( $2 != targetSize )
+					return $1 + targetSize;
+				return $0;
+			});
+
+			// Update height attribute to match width
+			newSrc = newSrc.replace( /([?&]h=)(\d+)/, function($0, $1, $2) {
+				if ( newSrc == img.src ) {
+					return $0;
+				}
+				// Stash the original size
+				var originalAtt = 'originalh', originalSize = img.getAttribute(originalAtt);
+				if ( originalSize === null ) {
+					originalSize = $2;
+					img.setAttribute(originalAtt, originalSize);
+				}
+				// Get the height of the image in CSS pixels
+				var size = img.clientHeight;
+				// Convert CSS pixels to device pixels
+				var targetSize = Math.ceil(size * scale);
+				// Don't go smaller than the original size
+				targetSize = Math.max( targetSize, originalSize );
+				// Don't go bigger unless the current one is actually lacking
+				if ( scale > img.getAttribute("scale") && targetSize <= img.naturalHeight )
+					targetSize = $2;
+				if ( $2 != targetSize )
+					return $1 + targetSize;
+				return $0;
+			});
+		}
+
+		// Scale simple imgpress queries (s0.wp.com) that only specify w/h/fit
+		else if ( img.src.match(/^https?:\/\/([^\/.]+\.)*(wp|wordpress)\.com\/imgpress\?(.+)/) ) {
+			var imgpressSafeFunctions = ["zoom", "url", "h", "w", "fit", "filter", "brightness", "contrast", "colorize", "smooth", "unsharpmask"];
+			// Search the query string for unsupported functions.
+			var qs = RegExp.$3.split('&');
+			for ( var q in qs ) {
+				q = qs[q].split('=')[0];
+				if ( imgpressSafeFunctions.indexOf(q) == -1 ) {
+					return false;
+				}
+			}
+			// Fix width and height attributes to rendered dimensions.
+			img.width = img.width;
+			img.height = img.height;
+			// Compute new src
+			if ( scale == 1 )
+				newSrc = img.src.replace(/\?(zoom=[^&]+&)?/, '?');
+			else
+				newSrc = img.src.replace(/\?(zoom=[^&]+&)?/, '?zoom=' + scale + '&');
+		}
+
+		// Scale LaTeX images or Photon queries (i#.wp.com)
+		else if (
+			img.src.match(/^https?:\/\/([^\/.]+\.)*(wp|wordpress)\.com\/latex\.php\?(latex|zoom)=(.+)/) ||
+			img.src.match(/^https?:\/\/i[\d]{1}\.wp\.com\/(.+)/)
+		) {
+			// Fix width and height attributes to rendered dimensions.
+			img.width = img.width;
+			img.height = img.height;
+			// Compute new src
+			if ( scale == 1 ) {
+				newSrc = img.src.replace(/\?(zoom=[^&]+&)?/, '?');
+			} else {
+				newSrc = img.src;
+
+				var url_var = newSrc.match( /\?w=(\d+)/ );
+				if ( url_var !== null && url_var[1] ) {
+					newSrc = newSrc.replace( new RegExp( 'w=' + url_var[1] ), 'w=' + img.width );
+				}
+
+				url_var = newSrc.match( /\?h=(\d+)/ );
+				if ( url_var !== null && url_var[1] ) {
+					newSrc = newSrc.replace( new RegExp( 'h=' + url_var[1] ), 'h=' + img.height );
+				}
+
+				var zoom_arg = '&zoom=2';
+				if ( !newSrc.match( /\?/ ) ) {
+					zoom_arg = '?zoom=2';
+				}
+				img.setAttribute( 'srcset', newSrc + zoom_arg + ' ' + scale + 'x' );
+			}
+		}
+
+		// Scale static assets that have a name matching *-1x.png or *@1x.png
+		else if ( img.src.match(/^https?:\/\/[^\/]+\/.*[-@]([12])x\.(gif|jpeg|jpg|png)(\?|$)/) ) {
+			// Fix width and height attributes to rendered dimensions.
+			img.width = img.width;
+			img.height = img.height;
+			var currentSize = RegExp.$1, newSize = currentSize;
+			if ( scale <= 1 )
+				newSize = 1;
+			else
+				newSize = 2;
+			if ( currentSize != newSize )
+				newSrc = img.src.replace(/([-@])[12]x\.(gif|jpeg|jpg|png)(\?|$)/, '$1'+newSize+'x.$2$3');
+		}
+
+		else {
+			return false;
+		}
+
+		// Don't set img.src unless it has changed. This avoids unnecessary reloads.
+		if ( newSrc != img.src ) {
+			// Store the original img.src
+			var prevSrc, origSrc = img.getAttribute("src-orig");
+			if ( !origSrc ) {
+				origSrc = img.src;
+				img.setAttribute("src-orig", origSrc);
+			}
+			// In case of error, revert img.src
+			prevSrc = img.src;
+			img.onerror = function(){
+				img.src = prevSrc;
+				if ( img.getAttribute("scale-fail") < scale )
+					img.setAttribute("scale-fail", scale);
+				img.onerror = null;
+			};
+			// Finally load the new image
+			img.src = newSrc;
+		}
+
+		return true;
+	}
+};
+
+wpcom_img_zoomer.init();
+;
+( function() {
+	var is_webkit = navigator.userAgent.toLowerCase().indexOf( 'webkit' ) > -1,
+	    is_opera  = navigator.userAgent.toLowerCase().indexOf( 'opera' )  > -1,
+	    is_ie     = navigator.userAgent.toLowerCase().indexOf( 'msie' )   > -1;
+
+	if ( ( is_webkit || is_opera || is_ie ) && 'undefined' !== typeof( document.getElementById ) ) {
+		var eventMethod = ( window.addEventListener ) ? 'addEventListener' : 'attachEvent';
+		window[ eventMethod ]( 'hashchange', function() {
+			var element = document.getElementById( location.hash.substring( 1 ) );
+
+			if ( element ) {
+				if ( ! /^(?:a|select|input|button|textarea)$/i.test( element.tagName ) )
+					element.tabIndex = -1;
+
+				element.focus();
+			}
+		}, false );
+	}
+})();
+;
+/*!
+ * skrollr core
+ *
+ * Alexander Prinzhorn - https://github.com/Prinzhorn/skrollr
+ *
+ * Free to use under terms of MIT license
+ */
+(function(window, document, undefined) {
+	'use strict';
+
+	/*
+	 * Global api.
+	 */
+	var skrollr = {
+		get: function() {
+			return _instance;
+		},
+		//Main entry point.
+		init: function(options) {
+			return _instance || new Skrollr(options);
+		},
+		VERSION: '0.6.25'
+	};
+
+	//Minify optimization.
+	var hasProp = Object.prototype.hasOwnProperty;
+	var Math = window.Math;
+	var getStyle = window.getComputedStyle;
+
+	//They will be filled when skrollr gets initialized.
+	var documentElement;
+	var body;
+
+	var EVENT_TOUCHSTART = 'touchstart';
+	var EVENT_TOUCHMOVE = 'touchmove';
+	var EVENT_TOUCHCANCEL = 'touchcancel';
+	var EVENT_TOUCHEND = 'touchend';
+
+	var SKROLLABLE_CLASS = 'skrollable';
+	var SKROLLABLE_BEFORE_CLASS = SKROLLABLE_CLASS + '-before';
+	var SKROLLABLE_BETWEEN_CLASS = SKROLLABLE_CLASS + '-between';
+	var SKROLLABLE_AFTER_CLASS = SKROLLABLE_CLASS + '-after';
+
+	var SKROLLR_CLASS = 'skrollr';
+	var NO_SKROLLR_CLASS = 'no-' + SKROLLR_CLASS;
+	var SKROLLR_DESKTOP_CLASS = SKROLLR_CLASS + '-desktop';
+	var SKROLLR_MOBILE_CLASS = SKROLLR_CLASS + '-mobile';
+
+	var DEFAULT_EASING = 'linear';
+	var DEFAULT_DURATION = 1000;//ms
+	var DEFAULT_MOBILE_DECELERATION = 0.004;//pixel/ms²
+
+	var DEFAULT_SMOOTH_SCROLLING_DURATION = 200;//ms
+
+	var ANCHOR_START = 'start';
+	var ANCHOR_END = 'end';
+	var ANCHOR_CENTER = 'center';
+	var ANCHOR_BOTTOM = 'bottom';
+
+	//The property which will be added to the DOM element to hold the ID of the skrollable.
+	var SKROLLABLE_ID_DOM_PROPERTY = '___skrollable_id';
+
+	var rxTouchIgnoreTags = /^(?:input|textarea|button|select)$/i;
+
+	var rxTrim = /^\s+|\s+$/g;
+
+	//Find all data-attributes. data-[_constant]-[offset]-[anchor]-[anchor].
+	var rxKeyframeAttribute = /^data(?:-(_\w+))?(?:-?(-?\d*\.?\d+p?))?(?:-?(start|end|top|center|bottom))?(?:-?(top|center|bottom))?$/;
+
+	var rxPropValue = /\s*(@?[\w\-\[\]]+)\s*:\s*(.+?)\s*(?:;|$)/gi;
+
+	//Easing function names follow the property in square brackets.
+	var rxPropEasing = /^([a-z\-]+)\[(\w+)\]$/;
+
+	var rxCamelCase = /-([a-z0-9_])/g;
+	var rxCamelCaseFn = function(str, letter) {
+		return letter.toUpperCase();
+	};
+
+	//Numeric values with optional sign.
+	var rxNumericValue = /[\-+]?[\d]*\.?[\d]+/g;
+
+	//Used to replace occurences of {?} with a number.
+	var rxInterpolateString = /\{\?\}/g;
+
+	//Finds rgb(a) colors, which don't use the percentage notation.
+	var rxRGBAIntegerColor = /rgba?\(\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+/g;
+
+	//Finds all gradients.
+	var rxGradient = /[a-z\-]+-gradient/g;
+
+	//Vendor prefix. Will be set once skrollr gets initialized.
+	var theCSSPrefix = '';
+	var theDashedCSSPrefix = '';
+
+	//Will be called once (when skrollr gets initialized).
+	var detectCSSPrefix = function() {
+		//Only relevant prefixes. May be extended.
+		//Could be dangerous if there will ever be a CSS property which actually starts with "ms". Don't hope so.
+		var rxPrefixes = /^(?:O|Moz|webkit|ms)|(?:-(?:o|moz|webkit|ms)-)/;
+
+		//Detect prefix for current browser by finding the first property using a prefix.
+		if(!getStyle) {
+			return;
+		}
+
+		var style = getStyle(body, null);
+
+		for(var k in style) {
+			//We check the key and if the key is a number, we check the value as well, because safari's getComputedStyle returns some weird array-like thingy.
+			theCSSPrefix = (k.match(rxPrefixes) || (+k == k && style[k].match(rxPrefixes)));
+
+			if(theCSSPrefix) {
+				break;
+			}
+		}
+
+		//Did we even detect a prefix?
+		if(!theCSSPrefix) {
+			theCSSPrefix = theDashedCSSPrefix = '';
+
+			return;
+		}
+
+		theCSSPrefix = theCSSPrefix[0];
+
+		//We could have detected either a dashed prefix or this camelCaseish-inconsistent stuff.
+		if(theCSSPrefix.slice(0,1) === '-') {
+			theDashedCSSPrefix = theCSSPrefix;
+
+			//There's no logic behind these. Need a look up.
+			theCSSPrefix = ({
+				'-webkit-': 'webkit',
+				'-moz-': 'Moz',
+				'-ms-': 'ms',
+				'-o-': 'O'
+			})[theCSSPrefix];
+		} else {
+			theDashedCSSPrefix = '-' + theCSSPrefix.toLowerCase() + '-';
+		}
+	};
+
+	var polyfillRAF = function() {
+		var requestAnimFrame = window.requestAnimationFrame || window[theCSSPrefix.toLowerCase() + 'RequestAnimationFrame'];
+
+		var lastTime = _now();
+
+		if(_isMobile || !requestAnimFrame) {
+			requestAnimFrame = function(callback) {
+				//How long did it take to render?
+				var deltaTime = _now() - lastTime;
+				var delay = Math.max(0, 1000 / 60 - deltaTime);
+
+				return window.setTimeout(function() {
+					lastTime = _now();
+					callback();
+				}, delay);
+			};
+		}
+
+		return requestAnimFrame;
+	};
+
+	var polyfillCAF = function() {
+		var cancelAnimFrame = window.cancelAnimationFrame || window[theCSSPrefix.toLowerCase() + 'CancelAnimationFrame'];
+
+		if(_isMobile || !cancelAnimFrame) {
+			cancelAnimFrame = function(timeout) {
+				return window.clearTimeout(timeout);
+			};
+		}
+
+		return cancelAnimFrame;
+	};
+
+	//Built-in easing functions.
+	var easings = {
+		begin: function() {
+			return 0;
+		},
+		end: function() {
+			return 1;
+		},
+		linear: function(p) {
+			return p;
+		},
+		quadratic: function(p) {
+			return p * p;
+		},
+		cubic: function(p) {
+			return p * p * p;
+		},
+		swing: function(p) {
+			return (-Math.cos(p * Math.PI) / 2) + 0.5;
+		},
+		sqrt: function(p) {
+			return Math.sqrt(p);
+		},
+		outCubic: function(p) {
+			return (Math.pow((p - 1), 3) + 1);
+		},
+		//see https://www.desmos.com/calculator/tbr20s8vd2 for how I did this
+		bounce: function(p) {
+			var a;
+
+			if(p <= 0.5083) {
+				a = 3;
+			} else if(p <= 0.8489) {
+				a = 9;
+			} else if(p <= 0.96208) {
+				a = 27;
+			} else if(p <= 0.99981) {
+				a = 91;
+			} else {
+				return 1;
+			}
+
+			return 1 - Math.abs(3 * Math.cos(p * a * 1.028) / a);
+		}
+	};
+
+	/**
+	 * Constructor.
+	 */
+	function Skrollr(options) {
+		documentElement = document.documentElement;
+		body = document.body;
+
+		detectCSSPrefix();
+
+		_instance = this;
+
+		options = options || {};
+
+		_constants = options.constants || {};
+
+		//We allow defining custom easings or overwrite existing.
+		if(options.easing) {
+			for(var e in options.easing) {
+				easings[e] = options.easing[e];
+			}
+		}
+
+		_edgeStrategy = options.edgeStrategy || 'set';
+
+		_listeners = {
+			//Function to be called right before rendering.
+			beforerender: options.beforerender,
+
+			//Function to be called right after finishing rendering.
+			render: options.render,
+
+			//Function to be called whenever an element with the `data-emit-events` attribute passes a keyframe.
+			keyframe: options.keyframe
+		};
+
+		//forceHeight is true by default
+		_forceHeight = options.forceHeight !== false;
+
+		if(_forceHeight) {
+			_scale = options.scale || 1;
+		}
+
+		_mobileDeceleration = options.mobileDeceleration || DEFAULT_MOBILE_DECELERATION;
+
+		_smoothScrollingEnabled = options.smoothScrolling !== false;
+		_smoothScrollingDuration = options.smoothScrollingDuration || DEFAULT_SMOOTH_SCROLLING_DURATION;
+
+		//Dummy object. Will be overwritten in the _render method when smooth scrolling is calculated.
+		_smoothScrolling = {
+			targetTop: _instance.getScrollTop()
+		};
+
+		//A custom check function may be passed.
+		_isMobile = ((options.mobileCheck || function() {
+			return (/Android|iPhone|iPad|iPod|BlackBerry/i).test(navigator.userAgent || navigator.vendor || window.opera);
+		})());
+
+		if(_isMobile) {
+			_skrollrBody = document.getElementById('skrollr-body');
+
+			//Detect 3d transform if there's a skrollr-body (only needed for #skrollr-body).
+			if(_skrollrBody) {
+				_detect3DTransforms();
+			}
+
+			_initMobile();
+			_updateClass(documentElement, [SKROLLR_CLASS, SKROLLR_MOBILE_CLASS], [NO_SKROLLR_CLASS]);
+		} else {
+			_updateClass(documentElement, [SKROLLR_CLASS, SKROLLR_DESKTOP_CLASS], [NO_SKROLLR_CLASS]);
+		}
+
+		//Triggers parsing of elements and a first reflow.
+		_instance.refresh();
+
+		_addEvent(window, 'resize orientationchange', function() {
+			var width = documentElement.clientWidth;
+			var height = documentElement.clientHeight;
+
+			//Only reflow if the size actually changed (#271).
+			if(height !== _lastViewportHeight || width !== _lastViewportWidth) {
+				_lastViewportHeight = height;
+				_lastViewportWidth = width;
+
+				_requestReflow = true;
+			}
+		});
+
+		var requestAnimFrame = polyfillRAF();
+
+		//Let's go.
+		(function animloop(){
+			_render();
+			_animFrame = requestAnimFrame(animloop);
+		}());
+
+		return _instance;
+	}
+
+	/**
+	 * (Re)parses some or all elements.
+	 */
+	Skrollr.prototype.refresh = function(elements) {
+		var elementIndex;
+		var elementsLength;
+		var ignoreID = false;
+
+		//Completely reparse anything without argument.
+		if(elements === undefined) {
+			//Ignore that some elements may already have a skrollable ID.
+			ignoreID = true;
+
+			_skrollables = [];
+			_skrollableIdCounter = 0;
+
+			elements = document.getElementsByTagName('*');
+		} else if(elements.length === undefined) {
+			//We also accept a single element as parameter.
+			elements = [elements];
+		}
+
+		elementIndex = 0;
+		elementsLength = elements.length;
+
+		for(; elementIndex < elementsLength; elementIndex++) {
+			var el = elements[elementIndex];
+			var anchorTarget = el;
+			var keyFrames = [];
+
+			//If this particular element should be smooth scrolled.
+			var smoothScrollThis = _smoothScrollingEnabled;
+
+			//The edge strategy for this particular element.
+			var edgeStrategy = _edgeStrategy;
+
+			//If this particular element should emit keyframe events.
+			var emitEvents = false;
+
+			//If we're reseting the counter, remove any old element ids that may be hanging around.
+			if(ignoreID && SKROLLABLE_ID_DOM_PROPERTY in el) {
+				delete el[SKROLLABLE_ID_DOM_PROPERTY];
+			}
+
+			if(!el.attributes) {
+				continue;
+			}
+
+			//Iterate over all attributes and search for key frame attributes.
+			var attributeIndex = 0;
+			var attributesLength = el.attributes.length;
+
+			for (; attributeIndex < attributesLength; attributeIndex++) {
+				var attr = el.attributes[attributeIndex];
+
+				if(attr.name === 'data-anchor-target') {
+					anchorTarget = document.querySelector(attr.value);
+
+					if(anchorTarget === null) {
+						throw 'Unable to find anchor target "' + attr.value + '"';
+					}
+
+					continue;
+				}
+
+				//Global smooth scrolling can be overridden by the element attribute.
+				if(attr.name === 'data-smooth-scrolling') {
+					smoothScrollThis = attr.value !== 'off';
+
+					continue;
+				}
+
+				//Global edge strategy can be overridden by the element attribute.
+				if(attr.name === 'data-edge-strategy') {
+					edgeStrategy = attr.value;
+
+					continue;
+				}
+
+				//Is this element tagged with the `data-emit-events` attribute?
+				if(attr.name === 'data-emit-events') {
+					emitEvents = true;
+
+					continue;
+				}
+
+				var match = attr.name.match(rxKeyframeAttribute);
+
+				if(match === null) {
+					continue;
+				}
+
+				var kf = {
+					props: attr.value,
+					//Point back to the element as well.
+					element: el,
+					//The name of the event which this keyframe will fire, if emitEvents is
+					eventType: attr.name.replace(rxCamelCase, rxCamelCaseFn)
+				};
+
+				keyFrames.push(kf);
+
+				var constant = match[1];
+
+				if(constant) {
+					//Strip the underscore prefix.
+					kf.constant = constant.substr(1);
+				}
+
+				//Get the key frame offset.
+				var offset = match[2];
+
+				//Is it a percentage offset?
+				if(/p$/.test(offset)) {
+					kf.isPercentage = true;
+					kf.offset = (offset.slice(0, -1) | 0) / 100;
+				} else {
+					kf.offset = (offset | 0);
+				}
+
+				var anchor1 = match[3];
+
+				//If second anchor is not set, the first will be taken for both.
+				var anchor2 = match[4] || anchor1;
+
+				//"absolute" (or "classic") mode, where numbers mean absolute scroll offset.
+				if(!anchor1 || anchor1 === ANCHOR_START || anchor1 === ANCHOR_END) {
+					kf.mode = 'absolute';
+
+					//data-end needs to be calculated after all key frames are known.
+					if(anchor1 === ANCHOR_END) {
+						kf.isEnd = true;
+					} else if(!kf.isPercentage) {
+						//For data-start we can already set the key frame w/o calculations.
+						//#59: "scale" options should only affect absolute mode.
+						kf.offset = kf.offset * _scale;
+					}
+				}
+				//"relative" mode, where numbers are relative to anchors.
+				else {
+					kf.mode = 'relative';
+					kf.anchors = [anchor1, anchor2];
+				}
+			}
+
+			//Does this element have key frames?
+			if(!keyFrames.length) {
+				continue;
+			}
+
+			//Will hold the original style and class attributes before we controlled the element (see #80).
+			var styleAttr, classAttr;
+
+			var id;
+
+			if(!ignoreID && SKROLLABLE_ID_DOM_PROPERTY in el) {
+				//We already have this element under control. Grab the corresponding skrollable id.
+				id = el[SKROLLABLE_ID_DOM_PROPERTY];
+				styleAttr = _skrollables[id].styleAttr;
+				classAttr = _skrollables[id].classAttr;
+			} else {
+				//It's an unknown element. Asign it a new skrollable id.
+				id = (el[SKROLLABLE_ID_DOM_PROPERTY] = _skrollableIdCounter++);
+				styleAttr = el.style.cssText;
+				classAttr = _getClass(el);
+			}
+
+			_skrollables[id] = {
+				element: el,
+				styleAttr: styleAttr,
+				classAttr: classAttr,
+				anchorTarget: anchorTarget,
+				keyFrames: keyFrames,
+				smoothScrolling: smoothScrollThis,
+				edgeStrategy: edgeStrategy,
+				emitEvents: emitEvents,
+				lastFrameIndex: -1
+			};
+
+			_updateClass(el, [SKROLLABLE_CLASS], []);
+		}
+
+		//Reflow for the first time.
+		_reflow();
+
+		//Now that we got all key frame numbers right, actually parse the properties.
+		elementIndex = 0;
+		elementsLength = elements.length;
+
+		for(; elementIndex < elementsLength; elementIndex++) {
+			var sk = _skrollables[elements[elementIndex][SKROLLABLE_ID_DOM_PROPERTY]];
+
+			if(sk === undefined) {
+				continue;
+			}
+
+			//Parse the property string to objects
+			_parseProps(sk);
+
+			//Fill key frames with missing properties from left and right
+			_fillProps(sk);
+		}
+
+		return _instance;
+	};
+
+	/**
+	 * Transform "relative" mode to "absolute" mode.
+	 * That is, calculate anchor position and offset of element.
+	 */
+	Skrollr.prototype.relativeToAbsolute = function(element, viewportAnchor, elementAnchor) {
+		var viewportHeight = documentElement.clientHeight;
+		var box = element.getBoundingClientRect();
+		var absolute = box.top;
+
+		//#100: IE doesn't supply "height" with getBoundingClientRect.
+		var boxHeight = box.bottom - box.top;
+
+		if(viewportAnchor === ANCHOR_BOTTOM) {
+			absolute -= viewportHeight;
+		} else if(viewportAnchor === ANCHOR_CENTER) {
+			absolute -= viewportHeight / 2;
+		}
+
+		if(elementAnchor === ANCHOR_BOTTOM) {
+			absolute += boxHeight;
+		} else if(elementAnchor === ANCHOR_CENTER) {
+			absolute += boxHeight / 2;
+		}
+
+		//Compensate scrolling since getBoundingClientRect is relative to viewport.
+		absolute += _instance.getScrollTop();
+
+		return (absolute + 0.5) | 0;
+	};
+
+	/**
+	 * Animates scroll top to new position.
+	 */
+	Skrollr.prototype.animateTo = function(top, options) {
+		options = options || {};
+
+		var now = _now();
+		var scrollTop = _instance.getScrollTop();
+
+		//Setting this to a new value will automatically cause the current animation to stop, if any.
+		_scrollAnimation = {
+			startTop: scrollTop,
+			topDiff: top - scrollTop,
+			targetTop: top,
+			duration: options.duration || DEFAULT_DURATION,
+			startTime: now,
+			endTime: now + (options.duration || DEFAULT_DURATION),
+			easing: easings[options.easing || DEFAULT_EASING],
+			done: options.done
+		};
+
+		//Don't queue the animation if there's nothing to animate.
+		if(!_scrollAnimation.topDiff) {
+			if(_scrollAnimation.done) {
+				_scrollAnimation.done.call(_instance, false);
+			}
+
+			_scrollAnimation = undefined;
+		}
+
+		return _instance;
+	};
+
+	/**
+	 * Stops animateTo animation.
+	 */
+	Skrollr.prototype.stopAnimateTo = function() {
+		if(_scrollAnimation && _scrollAnimation.done) {
+			_scrollAnimation.done.call(_instance, true);
+		}
+
+		_scrollAnimation = undefined;
+	};
+
+	/**
+	 * Returns if an animation caused by animateTo is currently running.
+	 */
+	Skrollr.prototype.isAnimatingTo = function() {
+		return !!_scrollAnimation;
+	};
+
+	Skrollr.prototype.isMobile = function() {
+		return _isMobile;
+	};
+
+	Skrollr.prototype.setScrollTop = function(top, force) {
+		_forceRender = (force === true);
+
+		if(_isMobile) {
+			_mobileOffset = Math.min(Math.max(top, 0), _maxKeyFrame);
+		} else {
+			window.scrollTo(0, top);
+		}
+
+		return _instance;
+	};
+
+	Skrollr.prototype.getScrollTop = function() {
+		if(_isMobile) {
+			return _mobileOffset;
+		} else {
+			return window.pageYOffset || documentElement.scrollTop || body.scrollTop || 0;
+		}
+	};
+
+	Skrollr.prototype.getMaxScrollTop = function() {
+		return _maxKeyFrame;
+	};
+
+	Skrollr.prototype.on = function(name, fn) {
+		_listeners[name] = fn;
+
+		return _instance;
+	};
+
+	Skrollr.prototype.off = function(name) {
+		delete _listeners[name];
+
+		return _instance;
+	};
+
+	Skrollr.prototype.destroy = function() {
+		var cancelAnimFrame = polyfillCAF();
+		cancelAnimFrame(_animFrame);
+		_removeAllEvents();
+
+		_updateClass(documentElement, [NO_SKROLLR_CLASS], [SKROLLR_CLASS, SKROLLR_DESKTOP_CLASS, SKROLLR_MOBILE_CLASS]);
+
+		var skrollableIndex = 0;
+		var skrollablesLength = _skrollables.length;
+
+		for(; skrollableIndex < skrollablesLength; skrollableIndex++) {
+			_reset(_skrollables[skrollableIndex].element);
+		}
+
+		documentElement.style.overflow = body.style.overflow = '';
+		documentElement.style.height = body.style.height = '';
+
+		if(_skrollrBody) {
+			skrollr.setStyle(_skrollrBody, 'transform', 'none');
+		}
+
+		_instance = undefined;
+		_skrollrBody = undefined;
+		_listeners = undefined;
+		_forceHeight = undefined;
+		_maxKeyFrame = 0;
+		_scale = 1;
+		_constants = undefined;
+		_mobileDeceleration = undefined;
+		_direction = 'down';
+		_lastTop = -1;
+		_lastViewportWidth = 0;
+		_lastViewportHeight = 0;
+		_requestReflow = false;
+		_scrollAnimation = undefined;
+		_smoothScrollingEnabled = undefined;
+		_smoothScrollingDuration = undefined;
+		_smoothScrolling = undefined;
+		_forceRender = undefined;
+		_skrollableIdCounter = 0;
+		_edgeStrategy = undefined;
+		_isMobile = false;
+		_mobileOffset = 0;
+		_translateZ = undefined;
+	};
+
+	/*
+		Private methods.
+	*/
+
+	var _initMobile = function() {
+		var initialElement;
+		var initialTouchY;
+		var initialTouchX;
+		var currentElement;
+		var currentTouchY;
+		var currentTouchX;
+		var lastTouchY;
+		var deltaY;
+
+		var initialTouchTime;
+		var currentTouchTime;
+		var lastTouchTime;
+		var deltaTime;
+
+		_addEvent(documentElement, [EVENT_TOUCHSTART, EVENT_TOUCHMOVE, EVENT_TOUCHCANCEL, EVENT_TOUCHEND].join(' '), function(e) {
+			var touch = e.changedTouches[0];
+
+			currentElement = e.target;
+
+			//We don't want text nodes.
+			while(currentElement.nodeType === 3) {
+				currentElement = currentElement.parentNode;
+			}
+
+			currentTouchY = touch.clientY;
+			currentTouchX = touch.clientX;
+			currentTouchTime = e.timeStamp;
+
+			if(!rxTouchIgnoreTags.test(currentElement.tagName)) {
+				e.preventDefault();
+			}
+
+			switch(e.type) {
+				case EVENT_TOUCHSTART:
+					//The last element we tapped on.
+					if(initialElement) {
+						initialElement.blur();
+					}
+
+					_instance.stopAnimateTo();
+
+					initialElement = currentElement;
+
+					initialTouchY = lastTouchY = currentTouchY;
+					initialTouchX = currentTouchX;
+					initialTouchTime = currentTouchTime;
+
+					break;
+				case EVENT_TOUCHMOVE:
+					//Prevent default event on touchIgnore elements in case they don't have focus yet.
+					if(rxTouchIgnoreTags.test(currentElement.tagName) && document.activeElement !== currentElement) {
+						e.preventDefault();
+					}
+
+					deltaY = currentTouchY - lastTouchY;
+					deltaTime = currentTouchTime - lastTouchTime;
+
+					_instance.setScrollTop(_mobileOffset - deltaY, true);
+
+					lastTouchY = currentTouchY;
+					lastTouchTime = currentTouchTime;
+					break;
+				default:
+				case EVENT_TOUCHCANCEL:
+				case EVENT_TOUCHEND:
+					var distanceY = initialTouchY - currentTouchY;
+					var distanceX = initialTouchX - currentTouchX;
+					var distance2 = distanceX * distanceX + distanceY * distanceY;
+
+					//Check if it was more like a tap (moved less than 7px).
+					if(distance2 < 49) {
+						if(!rxTouchIgnoreTags.test(initialElement.tagName)) {
+							initialElement.focus();
+
+							//It was a tap, click the element.
+							var clickEvent = document.createEvent('MouseEvents');
+							clickEvent.initMouseEvent('click', true, true, e.view, 1, touch.screenX, touch.screenY, touch.clientX, touch.clientY, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey, 0, null);
+							initialElement.dispatchEvent(clickEvent);
+						}
+
+						return;
+					}
+
+					initialElement = undefined;
+
+					var speed = deltaY / deltaTime;
+
+					//Cap speed at 3 pixel/ms.
+					speed = Math.max(Math.min(speed, 3), -3);
+
+					var duration = Math.abs(speed / _mobileDeceleration);
+					var targetOffset = speed * duration + 0.5 * _mobileDeceleration * duration * duration;
+					var targetTop = _instance.getScrollTop() - targetOffset;
+
+					//Relative duration change for when scrolling above bounds.
+					var targetRatio = 0;
+
+					//Change duration proportionally when scrolling would leave bounds.
+					if(targetTop > _maxKeyFrame) {
+						targetRatio = (_maxKeyFrame - targetTop) / targetOffset;
+
+						targetTop = _maxKeyFrame;
+					} else if(targetTop < 0) {
+						targetRatio = -targetTop / targetOffset;
+
+						targetTop = 0;
+					}
+
+					duration = duration * (1 - targetRatio);
+
+					_instance.animateTo((targetTop + 0.5) | 0, {easing: 'outCubic', duration: duration});
+					break;
+			}
+		});
+
+		//Just in case there has already been some native scrolling, reset it.
+		window.scrollTo(0, 0);
+		documentElement.style.overflow = body.style.overflow = 'hidden';
+	};
+
+	/**
+	 * Updates key frames which depend on others / need to be updated on resize.
+	 * That is "end" in "absolute" mode and all key frames in "relative" mode.
+	 * Also handles constants, because they may change on resize.
+	 */
+	var _updateDependentKeyFrames = function() {
+		var viewportHeight = documentElement.clientHeight;
+		var processedConstants = _processConstants();
+		var skrollable;
+		var element;
+		var anchorTarget;
+		var keyFrames;
+		var keyFrameIndex;
+		var keyFramesLength;
+		var kf;
+		var skrollableIndex;
+		var skrollablesLength;
+		var offset;
+		var constantValue;
+
+		//First process all relative-mode elements and find the max key frame.
+		skrollableIndex = 0;
+		skrollablesLength = _skrollables.length;
+
+		for(; skrollableIndex < skrollablesLength; skrollableIndex++) {
+			skrollable = _skrollables[skrollableIndex];
+			element = skrollable.element;
+			anchorTarget = skrollable.anchorTarget;
+			keyFrames = skrollable.keyFrames;
+
+			keyFrameIndex = 0;
+			keyFramesLength = keyFrames.length;
+
+			for(; keyFrameIndex < keyFramesLength; keyFrameIndex++) {
+				kf = keyFrames[keyFrameIndex];
+
+				offset = kf.offset;
+				constantValue = processedConstants[kf.constant] || 0;
+
+				kf.frame = offset;
+
+				if(kf.isPercentage) {
+					//Convert the offset to percentage of the viewport height.
+					offset = offset * viewportHeight;
+
+					//Absolute + percentage mode.
+					kf.frame = offset;
+				}
+
+				if(kf.mode === 'relative') {
+					_reset(element);
+
+					kf.frame = _instance.relativeToAbsolute(anchorTarget, kf.anchors[0], kf.anchors[1]) - offset;
+
+					_reset(element, true);
+				}
+
+				kf.frame += constantValue;
+
+				//Only search for max key frame when forceHeight is enabled.
+				if(_forceHeight) {
+					//Find the max key frame, but don't use one of the data-end ones for comparison.
+					if(!kf.isEnd && kf.frame > _maxKeyFrame) {
+						_maxKeyFrame = kf.frame;
+					}
+				}
+			}
+		}
+
+		//#133: The document can be larger than the maxKeyFrame we found.
+		_maxKeyFrame = Math.max(_maxKeyFrame, _getDocumentHeight());
+
+		//Now process all data-end keyframes.
+		skrollableIndex = 0;
+		skrollablesLength = _skrollables.length;
+
+		for(; skrollableIndex < skrollablesLength; skrollableIndex++) {
+			skrollable = _skrollables[skrollableIndex];
+			keyFrames = skrollable.keyFrames;
+
+			keyFrameIndex = 0;
+			keyFramesLength = keyFrames.length;
+
+			for(; keyFrameIndex < keyFramesLength; keyFrameIndex++) {
+				kf = keyFrames[keyFrameIndex];
+
+				constantValue = processedConstants[kf.constant] || 0;
+
+				if(kf.isEnd) {
+					kf.frame = _maxKeyFrame - kf.offset + constantValue;
+				}
+			}
+
+			skrollable.keyFrames.sort(_keyFrameComparator);
+		}
+	};
+
+	/**
+	 * Calculates and sets the style properties for the element at the given frame.
+	 * @param fakeFrame The frame to render at when smooth scrolling is enabled.
+	 * @param actualFrame The actual frame we are at.
+	 */
+	var _calcSteps = function(fakeFrame, actualFrame) {
+		//Iterate over all skrollables.
+		var skrollableIndex = 0;
+		var skrollablesLength = _skrollables.length;
+
+		for(; skrollableIndex < skrollablesLength; skrollableIndex++) {
+			var skrollable = _skrollables[skrollableIndex];
+			var element = skrollable.element;
+			var frame = skrollable.smoothScrolling ? fakeFrame : actualFrame;
+			var frames = skrollable.keyFrames;
+			var framesLength = frames.length;
+			var firstFrame = frames[0];
+			var lastFrame = frames[frames.length - 1];
+			var beforeFirst = frame < firstFrame.frame;
+			var afterLast = frame > lastFrame.frame;
+			var firstOrLastFrame = beforeFirst ? firstFrame : lastFrame;
+			var emitEvents = skrollable.emitEvents;
+			var lastFrameIndex = skrollable.lastFrameIndex;
+			var key;
+			var value;
+
+			//If we are before/after the first/last frame, set the styles according to the given edge strategy.
+			if(beforeFirst || afterLast) {
+				//Check if we already handled this edge case last time.
+				//Note: using setScrollTop it's possible that we jumped from one edge to the other.
+				if(beforeFirst && skrollable.edge === -1 || afterLast && skrollable.edge === 1) {
+					continue;
+				}
+
+				//Add the skrollr-before or -after class.
+				if(beforeFirst) {
+					_updateClass(element, [SKROLLABLE_BEFORE_CLASS], [SKROLLABLE_AFTER_CLASS, SKROLLABLE_BETWEEN_CLASS]);
+
+					//This handles the special case where we exit the first keyframe.
+					if(emitEvents && lastFrameIndex > -1) {
+						_emitEvent(element, firstFrame.eventType, _direction);
+						skrollable.lastFrameIndex = -1;
+					}
+				} else {
+					_updateClass(element, [SKROLLABLE_AFTER_CLASS], [SKROLLABLE_BEFORE_CLASS, SKROLLABLE_BETWEEN_CLASS]);
+
+					//This handles the special case where we exit the last keyframe.
+					if(emitEvents && lastFrameIndex < framesLength) {
+						_emitEvent(element, lastFrame.eventType, _direction);
+						skrollable.lastFrameIndex = framesLength;
+					}
+				}
+
+				//Remember that we handled the edge case (before/after the first/last keyframe).
+				skrollable.edge = beforeFirst ? -1 : 1;
+
+				switch(skrollable.edgeStrategy) {
+					case 'reset':
+						_reset(element);
+						continue;
+					case 'ease':
+						//Handle this case like it would be exactly at first/last keyframe and just pass it on.
+						frame = firstOrLastFrame.frame;
+						break;
+					default:
+					case 'set':
+						var props = firstOrLastFrame.props;
+
+						for(key in props) {
+							if(hasProp.call(props, key)) {
+								value = _interpolateString(props[key].value);
+
+								//Set style or attribute.
+								if(key.indexOf('@') === 0) {
+									element.setAttribute(key.substr(1), value);
+								} else {
+									skrollr.setStyle(element, key, value);
+								}
+							}
+						}
+
+						continue;
+				}
+			} else {
+				//Did we handle an edge last time?
+				if(skrollable.edge !== 0) {
+					_updateClass(element, [SKROLLABLE_CLASS, SKROLLABLE_BETWEEN_CLASS], [SKROLLABLE_BEFORE_CLASS, SKROLLABLE_AFTER_CLASS]);
+					skrollable.edge = 0;
+				}
+			}
+
+			//Find out between which two key frames we are right now.
+			var keyFrameIndex = 0;
+
+			for(; keyFrameIndex < framesLength - 1; keyFrameIndex++) {
+				if(frame >= frames[keyFrameIndex].frame && frame <= frames[keyFrameIndex + 1].frame) {
+					var left = frames[keyFrameIndex];
+					var right = frames[keyFrameIndex + 1];
+
+					for(key in left.props) {
+						if(hasProp.call(left.props, key)) {
+							var progress = (frame - left.frame) / (right.frame - left.frame);
+
+							//Transform the current progress using the given easing function.
+							progress = left.props[key].easing(progress);
+
+							//Interpolate between the two values
+							value = _calcInterpolation(left.props[key].value, right.props[key].value, progress);
+
+							value = _interpolateString(value);
+
+							//Set style or attribute.
+							if(key.indexOf('@') === 0) {
+								element.setAttribute(key.substr(1), value);
+							} else {
+								skrollr.setStyle(element, key, value);
+							}
+						}
+					}
+
+					//Are events enabled on this element?
+					//This code handles the usual cases of scrolling through different keyframes.
+					//The special cases of before first and after last keyframe are handled above.
+					if(emitEvents) {
+						//Did we pass a new keyframe?
+						if(lastFrameIndex !== keyFrameIndex) {
+							if(_direction === 'down') {
+								_emitEvent(element, left.eventType, _direction);
+							} else {
+								_emitEvent(element, right.eventType, _direction);
+							}
+
+							skrollable.lastFrameIndex = keyFrameIndex;
+						}
+					}
+
+					break;
+				}
+			}
+		}
+	};
+
+	/**
+	 * Renders all elements.
+	 */
+	var _render = function() {
+		if(_requestReflow) {
+			_requestReflow = false;
+			_reflow();
+		}
+
+		//We may render something else than the actual scrollbar position.
+		var renderTop = _instance.getScrollTop();
+
+		//If there's an animation, which ends in current render call, call the callback after rendering.
+		var afterAnimationCallback;
+		var now = _now();
+		var progress;
+
+		//Before actually rendering handle the scroll animation, if any.
+		if(_scrollAnimation) {
+			//It's over
+			if(now >= _scrollAnimation.endTime) {
+				renderTop = _scrollAnimation.targetTop;
+				afterAnimationCallback = _scrollAnimation.done;
+				_scrollAnimation = undefined;
+			} else {
+				//Map the current progress to the new progress using given easing function.
+				progress = _scrollAnimation.easing((now - _scrollAnimation.startTime) / _scrollAnimation.duration);
+
+				renderTop = (_scrollAnimation.startTop + progress * _scrollAnimation.topDiff) | 0;
+			}
+
+			_instance.setScrollTop(renderTop, true);
+		}
+		//Smooth scrolling only if there's no animation running and if we're not forcing the rendering.
+		else if(!_forceRender) {
+			var smoothScrollingDiff = _smoothScrolling.targetTop - renderTop;
+
+			//The user scrolled, start new smooth scrolling.
+			if(smoothScrollingDiff) {
+				_smoothScrolling = {
+					startTop: _lastTop,
+					topDiff: renderTop - _lastTop,
+					targetTop: renderTop,
+					startTime: _lastRenderCall,
+					endTime: _lastRenderCall + _smoothScrollingDuration
+				};
+			}
+
+			//Interpolate the internal scroll position (not the actual scrollbar).
+			if(now <= _smoothScrolling.endTime) {
+				//Map the current progress to the new progress using easing function.
+				progress = easings.sqrt((now - _smoothScrolling.startTime) / _smoothScrollingDuration);
+
+				renderTop = (_smoothScrolling.startTop + progress * _smoothScrolling.topDiff) | 0;
+			}
+		}
+
+		//That's were we actually "scroll" on mobile.
+		if(_isMobile && _skrollrBody) {
+			//Set the transform ("scroll it").
+			skrollr.setStyle(_skrollrBody, 'transform', 'translate(0, ' + -(_mobileOffset) + 'px) ' + _translateZ);
+		}
+
+		//Did the scroll position even change?
+		if(_forceRender || _lastTop !== renderTop) {
+			//Remember in which direction are we scrolling?
+			_direction = (renderTop > _lastTop) ? 'down' : (renderTop < _lastTop ? 'up' : _direction);
+
+			_forceRender = false;
+
+			var listenerParams = {
+				curTop: renderTop,
+				lastTop: _lastTop,
+				maxTop: _maxKeyFrame,
+				direction: _direction
+			};
+
+			//Tell the listener we are about to render.
+			var continueRendering = _listeners.beforerender && _listeners.beforerender.call(_instance, listenerParams);
+
+			//The beforerender listener function is able the cancel rendering.
+			if(continueRendering !== false) {
+				//Now actually interpolate all the styles.
+				_calcSteps(renderTop, _instance.getScrollTop());
+
+				//Remember when we last rendered.
+				_lastTop = renderTop;
+
+				if(_listeners.render) {
+					_listeners.render.call(_instance, listenerParams);
+				}
+			}
+
+			if(afterAnimationCallback) {
+				afterAnimationCallback.call(_instance, false);
+			}
+		}
+
+		_lastRenderCall = now;
+	};
+
+	/**
+	 * Parses the properties for each key frame of the given skrollable.
+	 */
+	var _parseProps = function(skrollable) {
+		//Iterate over all key frames
+		var keyFrameIndex = 0;
+		var keyFramesLength = skrollable.keyFrames.length;
+
+		for(; keyFrameIndex < keyFramesLength; keyFrameIndex++) {
+			var frame = skrollable.keyFrames[keyFrameIndex];
+			var easing;
+			var value;
+			var prop;
+			var props = {};
+
+			var match;
+
+			while((match = rxPropValue.exec(frame.props)) !== null) {
+				prop = match[1];
+				value = match[2];
+
+				easing = prop.match(rxPropEasing);
+
+				//Is there an easing specified for this prop?
+				if(easing !== null) {
+					prop = easing[1];
+					easing = easing[2];
+				} else {
+					easing = DEFAULT_EASING;
+				}
+
+				//Exclamation point at first position forces the value to be taken literal.
+				value = value.indexOf('!') ? _parseProp(value) : [value.slice(1)];
+
+				//Save the prop for this key frame with his value and easing function
+				props[prop] = {
+					value: value,
+					easing: easings[easing]
+				};
+			}
+
+			frame.props = props;
+		}
+	};
+
+	/**
+	 * Parses a value extracting numeric values and generating a format string
+	 * for later interpolation of the new values in old string.
+	 *
+	 * @param val The CSS value to be parsed.
+	 * @return Something like ["rgba(?%,?%, ?%,?)", 100, 50, 0, .7]
+	 * where the first element is the format string later used
+	 * and all following elements are the numeric value.
+	 */
+	var _parseProp = function(val) {
+		var numbers = [];
+
+		//One special case, where floats don't work.
+		//We replace all occurences of rgba colors
+		//which don't use percentage notation with the percentage notation.
+		rxRGBAIntegerColor.lastIndex = 0;
+		val = val.replace(rxRGBAIntegerColor, function(rgba) {
+			return rgba.replace(rxNumericValue, function(n) {
+				return n / 255 * 100 + '%';
+			});
+		});
+
+		//Handle prefixing of "gradient" values.
+		//For now only the prefixed value will be set. Unprefixed isn't supported anyway.
+		if(theDashedCSSPrefix) {
+			rxGradient.lastIndex = 0;
+			val = val.replace(rxGradient, function(s) {
+				return theDashedCSSPrefix + s;
+			});
+		}
+
+		//Now parse ANY number inside this string and create a format string.
+		val = val.replace(rxNumericValue, function(n) {
+			numbers.push(+n);
+			return '{?}';
+		});
+
+		//Add the formatstring as first value.
+		numbers.unshift(val);
+
+		return numbers;
+	};
+
+	/**
+	 * Fills the key frames with missing left and right hand properties.
+	 * If key frame 1 has property X and key frame 2 is missing X,
+	 * but key frame 3 has X again, then we need to assign X to key frame 2 too.
+	 *
+	 * @param sk A skrollable.
+	 */
+	var _fillProps = function(sk) {
+		//Will collect the properties key frame by key frame
+		var propList = {};
+		var keyFrameIndex;
+		var keyFramesLength;
+
+		//Iterate over all key frames from left to right
+		keyFrameIndex = 0;
+		keyFramesLength = sk.keyFrames.length;
+
+		for(; keyFrameIndex < keyFramesLength; keyFrameIndex++) {
+			_fillPropForFrame(sk.keyFrames[keyFrameIndex], propList);
+		}
+
+		//Now do the same from right to fill the last gaps
+
+		propList = {};
+
+		//Iterate over all key frames from right to left
+		keyFrameIndex = sk.keyFrames.length - 1;
+
+		for(; keyFrameIndex >= 0; keyFrameIndex--) {
+			_fillPropForFrame(sk.keyFrames[keyFrameIndex], propList);
+		}
+	};
+
+	var _fillPropForFrame = function(frame, propList) {
+		var key;
+
+		//For each key frame iterate over all right hand properties and assign them,
+		//but only if the current key frame doesn't have the property by itself
+		for(key in propList) {
+			//The current frame misses this property, so assign it.
+			if(!hasProp.call(frame.props, key)) {
+				frame.props[key] = propList[key];
+			}
+		}
+
+		//Iterate over all props of the current frame and collect them
+		for(key in frame.props) {
+			propList[key] = frame.props[key];
+		}
+	};
+
+	/**
+	 * Calculates the new values for two given values array.
+	 */
+	var _calcInterpolation = function(val1, val2, progress) {
+		var valueIndex;
+		var val1Length = val1.length;
+
+		//They both need to have the same length
+		if(val1Length !== val2.length) {
+			throw 'Can\'t interpolate between "' + val1[0] + '" and "' + val2[0] + '"';
+		}
+
+		//Add the format string as first element.
+		var interpolated = [val1[0]];
+
+		valueIndex = 1;
+
+		for(; valueIndex < val1Length; valueIndex++) {
+			//That's the line where the two numbers are actually interpolated.
+			interpolated[valueIndex] = val1[valueIndex] + ((val2[valueIndex] - val1[valueIndex]) * progress);
+		}
+
+		return interpolated;
+	};
+
+	/**
+	 * Interpolates the numeric values into the format string.
+	 */
+	var _interpolateString = function(val) {
+		var valueIndex = 1;
+
+		rxInterpolateString.lastIndex = 0;
+
+		return val[0].replace(rxInterpolateString, function() {
+			return val[valueIndex++];
+		});
+	};
+
+	/**
+	 * Resets the class and style attribute to what it was before skrollr manipulated the element.
+	 * Also remembers the values it had before reseting, in order to undo the reset.
+	 */
+	var _reset = function(elements, undo) {
+		//We accept a single element or an array of elements.
+		elements = [].concat(elements);
+
+		var skrollable;
+		var element;
+		var elementsIndex = 0;
+		var elementsLength = elements.length;
+
+		for(; elementsIndex < elementsLength; elementsIndex++) {
+			element = elements[elementsIndex];
+			skrollable = _skrollables[element[SKROLLABLE_ID_DOM_PROPERTY]];
+
+			//Couldn't find the skrollable for this DOM element.
+			if(!skrollable) {
+				continue;
+			}
+
+			if(undo) {
+				//Reset class and style to the "dirty" (set by skrollr) values.
+				element.style.cssText = skrollable.dirtyStyleAttr;
+				_updateClass(element, skrollable.dirtyClassAttr);
+			} else {
+				//Remember the "dirty" (set by skrollr) class and style.
+				skrollable.dirtyStyleAttr = element.style.cssText;
+				skrollable.dirtyClassAttr = _getClass(element);
+
+				//Reset class and style to what it originally was.
+				element.style.cssText = skrollable.styleAttr;
+				_updateClass(element, skrollable.classAttr);
+			}
+		}
+	};
+
+	/**
+	 * Detects support for 3d transforms by applying it to the skrollr-body.
+	 */
+	var _detect3DTransforms = function() {
+		_translateZ = 'translateZ(0)';
+		skrollr.setStyle(_skrollrBody, 'transform', _translateZ);
+
+		var computedStyle = getStyle(_skrollrBody);
+		var computedTransform = computedStyle.getPropertyValue('transform');
+		var computedTransformWithPrefix = computedStyle.getPropertyValue(theDashedCSSPrefix + 'transform');
+		var has3D = (computedTransform && computedTransform !== 'none') || (computedTransformWithPrefix && computedTransformWithPrefix !== 'none');
+
+		if(!has3D) {
+			_translateZ = '';
+		}
+	};
+
+	/**
+	 * Set the CSS property on the given element. Sets prefixed properties as well.
+	 */
+	skrollr.setStyle = function(el, prop, val) {
+		var style = el.style;
+
+		//Camel case.
+		prop = prop.replace(rxCamelCase, rxCamelCaseFn).replace('-', '');
+
+		//Make sure z-index gets a <integer>.
+		//This is the only <integer> case we need to handle.
+		if(prop === 'zIndex') {
+			if(isNaN(val)) {
+				//If it's not a number, don't touch it.
+				//It could for example be "auto" (#351).
+				style[prop] = val;
+			} else {
+				//Floor the number.
+				style[prop] = '' + (val | 0);
+			}
+		}
+		//#64: "float" can't be set across browsers. Needs to use "cssFloat" for all except IE.
+		else if(prop === 'float') {
+			style.styleFloat = style.cssFloat = val;
+		}
+		else {
+			//Need try-catch for old IE.
+			try {
+				//Set prefixed property if there's a prefix.
+				if(theCSSPrefix) {
+					style[theCSSPrefix + prop.slice(0,1).toUpperCase() + prop.slice(1)] = val;
+				}
+
+				//Set unprefixed.
+				style[prop] = val;
+			} catch(ignore) {}
+		}
+	};
+
+	/**
+	 * Cross browser event handling.
+	 */
+	var _addEvent = skrollr.addEvent = function(element, names, callback) {
+		var intermediate = function(e) {
+			//Normalize IE event stuff.
+			e = e || window.event;
+
+			if(!e.target) {
+				e.target = e.srcElement;
+			}
+
+			if(!e.preventDefault) {
+				e.preventDefault = function() {
+					e.returnValue = false;
+					e.defaultPrevented = true;
+				};
+			}
+
+			return callback.call(this, e);
+		};
+
+		names = names.split(' ');
+
+		var name;
+		var nameCounter = 0;
+		var namesLength = names.length;
+
+		for(; nameCounter < namesLength; nameCounter++) {
+			name = names[nameCounter];
+
+			if(element.addEventListener) {
+				element.addEventListener(name, callback, false);
+			} else {
+				element.attachEvent('on' + name, intermediate);
+			}
+
+			//Remember the events to be able to flush them later.
+			_registeredEvents.push({
+				element: element,
+				name: name,
+				listener: callback
+			});
+		}
+	};
+
+	var _removeEvent = skrollr.removeEvent = function(element, names, callback) {
+		names = names.split(' ');
+
+		var nameCounter = 0;
+		var namesLength = names.length;
+
+		for(; nameCounter < namesLength; nameCounter++) {
+			if(element.removeEventListener) {
+				element.removeEventListener(names[nameCounter], callback, false);
+			} else {
+				element.detachEvent('on' + names[nameCounter], callback);
+			}
+		}
+	};
+
+	var _removeAllEvents = function() {
+		var eventData;
+		var eventCounter = 0;
+		var eventsLength = _registeredEvents.length;
+
+		for(; eventCounter < eventsLength; eventCounter++) {
+			eventData = _registeredEvents[eventCounter];
+
+			_removeEvent(eventData.element, eventData.name, eventData.listener);
+		}
+
+		_registeredEvents = [];
+	};
+
+	var _emitEvent = function(element, name, direction) {
+		if(_listeners.keyframe) {
+			_listeners.keyframe.call(_instance, element, name, direction);
+		}
+	};
+
+	var _reflow = function() {
+		var pos = _instance.getScrollTop();
+
+		//Will be recalculated by _updateDependentKeyFrames.
+		_maxKeyFrame = 0;
+
+		if(_forceHeight && !_isMobile) {
+			//un-"force" the height to not mess with the calculations in _updateDependentKeyFrames (#216).
+			body.style.height = '';
+		}
+
+		_updateDependentKeyFrames();
+
+		if(_forceHeight && !_isMobile) {
+			//"force" the height.
+			body.style.height = (_maxKeyFrame + documentElement.clientHeight) + 'px';
+		}
+
+		//The scroll offset may now be larger than needed (on desktop the browser/os prevents scrolling farther than the bottom).
+		if(_isMobile) {
+			_instance.setScrollTop(Math.min(_instance.getScrollTop(), _maxKeyFrame));
+		} else {
+			//Remember and reset the scroll pos (#217).
+			_instance.setScrollTop(pos, true);
+		}
+
+		_forceRender = true;
+	};
+
+	/*
+	 * Returns a copy of the constants object where all functions and strings have been evaluated.
+	 */
+	var _processConstants = function() {
+		var viewportHeight = documentElement.clientHeight;
+		var copy = {};
+		var prop;
+		var value;
+
+		for(prop in _constants) {
+			value = _constants[prop];
+
+			if(typeof value === 'function') {
+				value = value.call(_instance);
+			}
+			//Percentage offset.
+			else if((/p$/).test(value)) {
+				value = (value.slice(0, -1) / 100) * viewportHeight;
+			}
+
+			copy[prop] = value;
+		}
+
+		return copy;
+	};
+
+	/*
+	 * Returns the height of the document.
+	 */
+	var _getDocumentHeight = function() {
+		var skrollrBodyHeight = (_skrollrBody && _skrollrBody.offsetHeight || 0);
+		var bodyHeight = Math.max(skrollrBodyHeight, body.scrollHeight, body.offsetHeight, documentElement.scrollHeight, documentElement.offsetHeight, documentElement.clientHeight);
+
+		return bodyHeight - documentElement.clientHeight;
+	};
+
+	/**
+	 * Returns a string of space separated classnames for the current element.
+	 * Works with SVG as well.
+	 */
+	var _getClass = function(element) {
+		var prop = 'className';
+
+		//SVG support by using className.baseVal instead of just className.
+		if(window.SVGElement && element instanceof window.SVGElement) {
+			element = element[prop];
+			prop = 'baseVal';
+		}
+
+		return element[prop];
+	};
+
+	/**
+	 * Adds and removes a CSS classes.
+	 * Works with SVG as well.
+	 * add and remove are arrays of strings,
+	 * or if remove is ommited add is a string and overwrites all classes.
+	 */
+	var _updateClass = function(element, add, remove) {
+		var prop = 'className';
+
+		//SVG support by using className.baseVal instead of just className.
+		if(window.SVGElement && element instanceof window.SVGElement) {
+			element = element[prop];
+			prop = 'baseVal';
+		}
+
+		//When remove is ommited, we want to overwrite/set the classes.
+		if(remove === undefined) {
+			element[prop] = add;
+			return;
+		}
+
+		//Cache current classes. We will work on a string before passing back to DOM.
+		var val = element[prop];
+
+		//All classes to be removed.
+		var classRemoveIndex = 0;
+		var removeLength = remove.length;
+
+		for(; classRemoveIndex < removeLength; classRemoveIndex++) {
+			val = _untrim(val).replace(_untrim(remove[classRemoveIndex]), ' ');
+		}
+
+		val = _trim(val);
+
+		//All classes to be added.
+		var classAddIndex = 0;
+		var addLength = add.length;
+
+		for(; classAddIndex < addLength; classAddIndex++) {
+			//Only add if el not already has class.
+			if(_untrim(val).indexOf(_untrim(add[classAddIndex])) === -1) {
+				val += ' ' + add[classAddIndex];
+			}
+		}
+
+		element[prop] = _trim(val);
+	};
+
+	var _trim = function(a) {
+		return a.replace(rxTrim, '');
+	};
+
+	/**
+	 * Adds a space before and after the string.
+	 */
+	var _untrim = function(a) {
+		return ' ' + a + ' ';
+	};
+
+	var _now = Date.now || function() {
+		return +new Date();
+	};
+
+	var _keyFrameComparator = function(a, b) {
+		return a.frame - b.frame;
+	};
+
+	/*
+	 * Private variables.
+	 */
+
+	//Singleton
+	var _instance;
+
+	/*
+		A list of all elements which should be animated associated with their the metadata.
+		Exmaple skrollable with two key frames animating from 100px width to 20px:
+
+		skrollable = {
+			element: <the DOM element>,
+			styleAttr: <style attribute of the element before skrollr>,
+			classAttr: <class attribute of the element before skrollr>,
+			keyFrames: [
+				{
+					frame: 100,
+					props: {
+						width: {
+							value: ['{?}px', 100],
+							easing: <reference to easing function>
+						}
+					},
+					mode: "absolute"
+				},
+				{
+					frame: 200,
+					props: {
+						width: {
+							value: ['{?}px', 20],
+							easing: <reference to easing function>
+						}
+					},
+					mode: "absolute"
+				}
+			]
+		};
+	*/
+	var _skrollables;
+
+	var _skrollrBody;
+
+	var _listeners;
+	var _forceHeight;
+	var _maxKeyFrame = 0;
+
+	var _scale = 1;
+	var _constants;
+
+	var _mobileDeceleration;
+
+	//Current direction (up/down).
+	var _direction = 'down';
+
+	//The last top offset value. Needed to determine direction.
+	var _lastTop = -1;
+
+	//The last time we called the render method (doesn't mean we rendered!).
+	var _lastRenderCall = _now();
+
+	//For detecting if it actually resized (#271).
+	var _lastViewportWidth = 0;
+	var _lastViewportHeight = 0;
+
+	var _requestReflow = false;
+
+	//Will contain data about a running scrollbar animation, if any.
+	var _scrollAnimation;
+
+	var _smoothScrollingEnabled;
+
+	var _smoothScrollingDuration;
+
+	//Will contain settins for smooth scrolling if enabled.
+	var _smoothScrolling;
+
+	//Can be set by any operation/event to force rendering even if the scrollbar didn't move.
+	var _forceRender;
+
+	//Each skrollable gets an unique ID incremented for each skrollable.
+	//The ID is the index in the _skrollables array.
+	var _skrollableIdCounter = 0;
+
+	var _edgeStrategy;
+
+
+	//Mobile specific vars. Will be stripped by UglifyJS when not in use.
+	var _isMobile = false;
+
+	//The virtual scroll offset when using mobile scrolling.
+	var _mobileOffset = 0;
+
+	//If the browser supports 3d transforms, this will be filled with 'translateZ(0)' (empty string otherwise).
+	var _translateZ;
+
+	//Will contain data about registered events by skrollr.
+	var _registeredEvents = [];
+
+	//Animation frame id returned by RequestAnimationFrame (or timeout when RAF is not supported).
+	var _animFrame;
+
+	//Expose skrollr as either a global variable or a require.js module
+	if(typeof define === 'function' && define.amd) {
+		define('skrollr', function () {
+			return skrollr;
+		});
+	} else if (typeof module !== 'undefined' && module.exports) {
+		module.exports = skrollr;
+	} else {
+		window.skrollr = skrollr;
+	}
+
+}(window, document));
+;
+/*!
+ * imagesLoaded PACKAGED v3.0.4
+ * JavaScript is all like "You images are done yet or what?"
+ * MIT License
+ */
+
+
+/*!
+ * EventEmitter v4.2.4 - git.io/ee
+ * Oliver Caldwell
+ * MIT license
+ * @preserve
+ */
+
+(function () {
+
+
+	/**
+	 * Class for managing events.
+	 * Can be extended to provide event functionality in other classes.
+	 *
+	 * @class EventEmitter Manages event registering and emitting.
+	 */
+	function EventEmitter() {}
+
+	// Shortcuts to improve speed and size
+
+	// Easy access to the prototype
+	var proto = EventEmitter.prototype;
+
+	/**
+	 * Finds the index of the listener for the event in it's storage array.
+	 *
+	 * @param {Function[]} listeners Array of listeners to search through.
+	 * @param {Function} listener Method to look for.
+	 * @return {Number} Index of the specified listener, -1 if not found
+	 * @api private
+	 */
+	function indexOfListener(listeners, listener) {
+		var i = listeners.length;
+		while (i--) {
+			if (listeners[i].listener === listener) {
+				return i;
+			}
+		}
+
+		return -1;
+	}
+
+	/**
+	 * Alias a method while keeping the context correct, to allow for overwriting of target method.
+	 *
+	 * @param {String} name The name of the target method.
+	 * @return {Function} The aliased method
+	 * @api private
+	 */
+	function alias(name) {
+		return function aliasClosure() {
+			return this[name].apply(this, arguments);
+		};
+	}
+
+	/**
+	 * Returns the listener array for the specified event.
+	 * Will initialise the event object and listener arrays if required.
+	 * Will return an object if you use a regex search. The object contains keys for each matched event. So /ba[rz]/ might return an object containing bar and baz. But only if you have either defined them with defineEvent or added some listeners to them.
+	 * Each property in the object response is an array of listener functions.
+	 *
+	 * @param {String|RegExp} evt Name of the event to return the listeners from.
+	 * @return {Function[]|Object} All listener functions for the event.
+	 */
+	proto.getListeners = function getListeners(evt) {
+		var events = this._getEvents();
+		var response;
+		var key;
+
+		// Return a concatenated array of all matching events if
+		// the selector is a regular expression.
+		if (typeof evt === 'object') {
+			response = {};
+			for (key in events) {
+				if (events.hasOwnProperty(key) && evt.test(key)) {
+					response[key] = events[key];
+				}
+			}
+		}
+		else {
+			response = events[evt] || (events[evt] = []);
+		}
+
+		return response;
+	};
+
+	/**
+	 * Takes a list of listener objects and flattens it into a list of listener functions.
+	 *
+	 * @param {Object[]} listeners Raw listener objects.
+	 * @return {Function[]} Just the listener functions.
+	 */
+	proto.flattenListeners = function flattenListeners(listeners) {
+		var flatListeners = [];
+		var i;
+
+		for (i = 0; i < listeners.length; i += 1) {
+			flatListeners.push(listeners[i].listener);
+		}
+
+		return flatListeners;
+	};
+
+	/**
+	 * Fetches the requested listeners via getListeners but will always return the results inside an object. This is mainly for internal use but others may find it useful.
+	 *
+	 * @param {String|RegExp} evt Name of the event to return the listeners from.
+	 * @return {Object} All listener functions for an event in an object.
+	 */
+	proto.getListenersAsObject = function getListenersAsObject(evt) {
+		var listeners = this.getListeners(evt);
+		var response;
+
+		if (listeners instanceof Array) {
+			response = {};
+			response[evt] = listeners;
+		}
+
+		return response || listeners;
+	};
+
+	/**
+	 * Adds a listener function to the specified event.
+	 * The listener will not be added if it is a duplicate.
+	 * If the listener returns true then it will be removed after it is called.
+	 * If you pass a regular expression as the event name then the listener will be added to all events that match it.
+	 *
+	 * @param {String|RegExp} evt Name of the event to attach the listener to.
+	 * @param {Function} listener Method to be called when the event is emitted. If the function returns true then it will be removed after calling.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.addListener = function addListener(evt, listener) {
+		var listeners = this.getListenersAsObject(evt);
+		var listenerIsWrapped = typeof listener === 'object';
+		var key;
+
+		for (key in listeners) {
+			if (listeners.hasOwnProperty(key) && indexOfListener(listeners[key], listener) === -1) {
+				listeners[key].push(listenerIsWrapped ? listener : {
+					listener: listener,
+					once: false
+				});
+			}
+		}
+
+		return this;
+	};
+
+	/**
+	 * Alias of addListener
+	 */
+	proto.on = alias('addListener');
+
+	/**
+	 * Semi-alias of addListener. It will add a listener that will be
+	 * automatically removed after it's first execution.
+	 *
+	 * @param {String|RegExp} evt Name of the event to attach the listener to.
+	 * @param {Function} listener Method to be called when the event is emitted. If the function returns true then it will be removed after calling.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.addOnceListener = function addOnceListener(evt, listener) {
+		return this.addListener(evt, {
+			listener: listener,
+			once: true
+		});
+	};
+
+	/**
+	 * Alias of addOnceListener.
+	 */
+	proto.once = alias('addOnceListener');
+
+	/**
+	 * Defines an event name. This is required if you want to use a regex to add a listener to multiple events at once. If you don't do this then how do you expect it to know what event to add to? Should it just add to every possible match for a regex? No. That is scary and bad.
+	 * You need to tell it what event names should be matched by a regex.
+	 *
+	 * @param {String} evt Name of the event to create.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.defineEvent = function defineEvent(evt) {
+		this.getListeners(evt);
+		return this;
+	};
+
+	/**
+	 * Uses defineEvent to define multiple events.
+	 *
+	 * @param {String[]} evts An array of event names to define.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.defineEvents = function defineEvents(evts) {
+		for (var i = 0; i < evts.length; i += 1) {
+			this.defineEvent(evts[i]);
+		}
+		return this;
+	};
+
+	/**
+	 * Removes a listener function from the specified event.
+	 * When passed a regular expression as the event name, it will remove the listener from all events that match it.
+	 *
+	 * @param {String|RegExp} evt Name of the event to remove the listener from.
+	 * @param {Function} listener Method to remove from the event.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.removeListener = function removeListener(evt, listener) {
+		var listeners = this.getListenersAsObject(evt);
+		var index;
+		var key;
+
+		for (key in listeners) {
+			if (listeners.hasOwnProperty(key)) {
+				index = indexOfListener(listeners[key], listener);
+
+				if (index !== -1) {
+					listeners[key].splice(index, 1);
+				}
+			}
+		}
+
+		return this;
+	};
+
+	/**
+	 * Alias of removeListener
+	 */
+	proto.off = alias('removeListener');
+
+	/**
+	 * Adds listeners in bulk using the manipulateListeners method.
+	 * If you pass an object as the second argument you can add to multiple events at once. The object should contain key value pairs of events and listeners or listener arrays. You can also pass it an event name and an array of listeners to be added.
+	 * You can also pass it a regular expression to add the array of listeners to all events that match it.
+	 * Yeah, this function does quite a bit. That's probably a bad thing.
+	 *
+	 * @param {String|Object|RegExp} evt An event name if you will pass an array of listeners next. An object if you wish to add to multiple events at once.
+	 * @param {Function[]} [listeners] An optional array of listener functions to add.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.addListeners = function addListeners(evt, listeners) {
+		// Pass through to manipulateListeners
+		return this.manipulateListeners(false, evt, listeners);
+	};
+
+	/**
+	 * Removes listeners in bulk using the manipulateListeners method.
+	 * If you pass an object as the second argument you can remove from multiple events at once. The object should contain key value pairs of events and listeners or listener arrays.
+	 * You can also pass it an event name and an array of listeners to be removed.
+	 * You can also pass it a regular expression to remove the listeners from all events that match it.
+	 *
+	 * @param {String|Object|RegExp} evt An event name if you will pass an array of listeners next. An object if you wish to remove from multiple events at once.
+	 * @param {Function[]} [listeners] An optional array of listener functions to remove.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.removeListeners = function removeListeners(evt, listeners) {
+		// Pass through to manipulateListeners
+		return this.manipulateListeners(true, evt, listeners);
+	};
+
+	/**
+	 * Edits listeners in bulk. The addListeners and removeListeners methods both use this to do their job. You should really use those instead, this is a little lower level.
+	 * The first argument will determine if the listeners are removed (true) or added (false).
+	 * If you pass an object as the second argument you can add/remove from multiple events at once. The object should contain key value pairs of events and listeners or listener arrays.
+	 * You can also pass it an event name and an array of listeners to be added/removed.
+	 * You can also pass it a regular expression to manipulate the listeners of all events that match it.
+	 *
+	 * @param {Boolean} remove True if you want to remove listeners, false if you want to add.
+	 * @param {String|Object|RegExp} evt An event name if you will pass an array of listeners next. An object if you wish to add/remove from multiple events at once.
+	 * @param {Function[]} [listeners] An optional array of listener functions to add/remove.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.manipulateListeners = function manipulateListeners(remove, evt, listeners) {
+		var i;
+		var value;
+		var single = remove ? this.removeListener : this.addListener;
+		var multiple = remove ? this.removeListeners : this.addListeners;
+
+		// If evt is an object then pass each of it's properties to this method
+		if (typeof evt === 'object' && !(evt instanceof RegExp)) {
+			for (i in evt) {
+				if (evt.hasOwnProperty(i) && (value = evt[i])) {
+					// Pass the single listener straight through to the singular method
+					if (typeof value === 'function') {
+						single.call(this, i, value);
+					}
+					else {
+						// Otherwise pass back to the multiple function
+						multiple.call(this, i, value);
+					}
+				}
+			}
+		}
+		else {
+			// So evt must be a string
+			// And listeners must be an array of listeners
+			// Loop over it and pass each one to the multiple method
+			i = listeners.length;
+			while (i--) {
+				single.call(this, evt, listeners[i]);
+			}
+		}
+
+		return this;
+	};
+
+	/**
+	 * Removes all listeners from a specified event.
+	 * If you do not specify an event then all listeners will be removed.
+	 * That means every event will be emptied.
+	 * You can also pass a regex to remove all events that match it.
+	 *
+	 * @param {String|RegExp} [evt] Optional name of the event to remove all listeners for. Will remove from every event if not passed.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.removeEvent = function removeEvent(evt) {
+		var type = typeof evt;
+		var events = this._getEvents();
+		var key;
+
+		// Remove different things depending on the state of evt
+		if (type === 'string') {
+			// Remove all listeners for the specified event
+			delete events[evt];
+		}
+		else if (type === 'object') {
+			// Remove all events matching the regex.
+			for (key in events) {
+				if (events.hasOwnProperty(key) && evt.test(key)) {
+					delete events[key];
+				}
+			}
+		}
+		else {
+			// Remove all listeners in all events
+			delete this._events;
+		}
+
+		return this;
+	};
+
+	/**
+	 * Alias of removeEvent.
+	 *
+	 * Added to mirror the node API.
+	 */
+	proto.removeAllListeners = alias('removeEvent');
+
+	/**
+	 * Emits an event of your choice.
+	 * When emitted, every listener attached to that event will be executed.
+	 * If you pass the optional argument array then those arguments will be passed to every listener upon execution.
+	 * Because it uses `apply`, your array of arguments will be passed as if you wrote them out separately.
+	 * So they will not arrive within the array on the other side, they will be separate.
+	 * You can also pass a regular expression to emit to all events that match it.
+	 *
+	 * @param {String|RegExp} evt Name of the event to emit and execute listeners for.
+	 * @param {Array} [args] Optional array of arguments to be passed to each listener.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.emitEvent = function emitEvent(evt, args) {
+		var listeners = this.getListenersAsObject(evt);
+		var listener;
+		var i;
+		var key;
+		var response;
+
+		for (key in listeners) {
+			if (listeners.hasOwnProperty(key)) {
+				i = listeners[key].length;
+
+				while (i--) {
+					// If the listener returns true then it shall be removed from the event
+					// The function is executed either with a basic call or an apply if there is an args array
+					listener = listeners[key][i];
+
+					if (listener.once === true) {
+						this.removeListener(evt, listener.listener);
+					}
+
+					response = listener.listener.apply(this, args || []);
+
+					if (response === this._getOnceReturnValue()) {
+						this.removeListener(evt, listener.listener);
+					}
+				}
+			}
+		}
+
+		return this;
+	};
+
+	/**
+	 * Alias of emitEvent
+	 */
+	proto.trigger = alias('emitEvent');
+
+	/**
+	 * Subtly different from emitEvent in that it will pass its arguments on to the listeners, as opposed to taking a single array of arguments to pass on.
+	 * As with emitEvent, you can pass a regex in place of the event name to emit to all events that match it.
+	 *
+	 * @param {String|RegExp} evt Name of the event to emit and execute listeners for.
+	 * @param {...*} Optional additional arguments to be passed to each listener.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.emit = function emit(evt) {
+		var args = Array.prototype.slice.call(arguments, 1);
+		return this.emitEvent(evt, args);
+	};
+
+	/**
+	 * Sets the current value to check against when executing listeners. If a
+	 * listeners return value matches the one set here then it will be removed
+	 * after execution. This value defaults to true.
+	 *
+	 * @param {*} value The new value to check for when executing listeners.
+	 * @return {Object} Current instance of EventEmitter for chaining.
+	 */
+	proto.setOnceReturnValue = function setOnceReturnValue(value) {
+		this._onceReturnValue = value;
+		return this;
+	};
+
+	/**
+	 * Fetches the current value to check against when executing listeners. If
+	 * the listeners return value matches this one then it should be removed
+	 * automatically. It will return true by default.
+	 *
+	 * @return {*|Boolean} The current value to check for or the default, true.
+	 * @api private
+	 */
+	proto._getOnceReturnValue = function _getOnceReturnValue() {
+		if (this.hasOwnProperty('_onceReturnValue')) {
+			return this._onceReturnValue;
+		}
+		else {
+			return true;
+		}
+	};
+
+	/**
+	 * Fetches the events object and creates one if required.
+	 *
+	 * @return {Object} The events storage object.
+	 * @api private
+	 */
+	proto._getEvents = function _getEvents() {
+		return this._events || (this._events = {});
+	};
+
+	// Expose the class either via AMD, CommonJS or the global object
+	if (typeof define === 'function' && define.amd) {
+		define('eventEmitter/EventEmitter',[],function () {
+			return EventEmitter;
+		});
+	}
+	else if (typeof module === 'object' && module.exports){
+		module.exports = EventEmitter;
+	}
+	else {
+		this.EventEmitter = EventEmitter;
+	}
+}.call(this));
+
+/*!
+ * eventie v1.0.3
+ * event binding helper
+ *   eventie.bind( elem, 'click', myFn )
+ *   eventie.unbind( elem, 'click', myFn )
+ */
+
+/*jshint browser: true, undef: true, unused: true */
+/*global define: false */
+
+( function( window ) {
+
+
+
+var docElem = document.documentElement;
+
+var bind = function() {};
+
+if ( docElem.addEventListener ) {
+  bind = function( obj, type, fn ) {
+    obj.addEventListener( type, fn, false );
+  };
+} else if ( docElem.attachEvent ) {
+  bind = function( obj, type, fn ) {
+    obj[ type + fn ] = fn.handleEvent ?
+      function() {
+        var event = window.event;
+        // add event.target
+        event.target = event.target || event.srcElement;
+        fn.handleEvent.call( fn, event );
+      } :
+      function() {
+        var event = window.event;
+        // add event.target
+        event.target = event.target || event.srcElement;
+        fn.call( obj, event );
+      };
+    obj.attachEvent( "on" + type, obj[ type + fn ] );
+  };
+}
+
+var unbind = function() {};
+
+if ( docElem.removeEventListener ) {
+  unbind = function( obj, type, fn ) {
+    obj.removeEventListener( type, fn, false );
+  };
+} else if ( docElem.detachEvent ) {
+  unbind = function( obj, type, fn ) {
+    obj.detachEvent( "on" + type, obj[ type + fn ] );
+    try {
+      delete obj[ type + fn ];
+    } catch ( err ) {
+      // can't delete window object properties
+      obj[ type + fn ] = undefined;
+    }
+  };
+}
+
+var eventie = {
+  bind: bind,
+  unbind: unbind
+};
+
+// transport
+if ( typeof define === 'function' && define.amd ) {
+  // AMD
+  define( 'eventie/eventie',eventie );
+} else {
+  // browser global
+  window.eventie = eventie;
+}
+
+})( this );
+
+/*!
+ * imagesLoaded v3.0.4
+ * JavaScript is all like "You images are done yet or what?"
+ * MIT License
+ */
+
+( function( window ) {
+
+
+
+var $ = window.jQuery;
+var console = window.console;
+var hasConsole = typeof console !== 'undefined';
+
+// -------------------------- helpers -------------------------- //
+
+// extend objects
+function extend( a, b ) {
+  for ( var prop in b ) {
+    a[ prop ] = b[ prop ];
+  }
+  return a;
+}
+
+var objToString = Object.prototype.toString;
+function isArray( obj ) {
+  return objToString.call( obj ) === '[object Array]';
+}
+
+// turn element or nodeList into an array
+function makeArray( obj ) {
+  var ary = [];
+  if ( isArray( obj ) ) {
+    // use object if already an array
+    ary = obj;
+  } else if ( typeof obj.length === 'number' ) {
+    // convert nodeList to array
+    for ( var i=0, len = obj.length; i < len; i++ ) {
+      ary.push( obj[i] );
+    }
+  } else {
+    // array of single index
+    ary.push( obj );
+  }
+  return ary;
+}
+
+// --------------------------  -------------------------- //
+
+function defineImagesLoaded( EventEmitter, eventie ) {
+
+  /**
+   * @param {Array, Element, NodeList, String} elem
+   * @param {Object or Function} options - if function, use as callback
+   * @param {Function} onAlways - callback function
+   */
+  function ImagesLoaded( elem, options, onAlways ) {
+    // coerce ImagesLoaded() without new, to be new ImagesLoaded()
+    if ( !( this instanceof ImagesLoaded ) ) {
+      return new ImagesLoaded( elem, options );
+    }
+    // use elem as selector string
+    if ( typeof elem === 'string' ) {
+      elem = document.querySelectorAll( elem );
+    }
+
+    this.elements = makeArray( elem );
+    this.options = extend( {}, this.options );
+
+    if ( typeof options === 'function' ) {
+      onAlways = options;
+    } else {
+      extend( this.options, options );
+    }
+
+    if ( onAlways ) {
+      this.on( 'always', onAlways );
+    }
+
+    this.getImages();
+
+    if ( $ ) {
+      // add jQuery Deferred object
+      this.jqDeferred = new $.Deferred();
+    }
+
+    // HACK check async to allow time to bind listeners
+    var _this = this;
+    setTimeout( function() {
+      _this.check();
+    });
+  }
+
+  ImagesLoaded.prototype = new EventEmitter();
+
+  ImagesLoaded.prototype.options = {};
+
+  ImagesLoaded.prototype.getImages = function() {
+    this.images = [];
+
+    // filter & find items if we have an item selector
+    for ( var i=0, len = this.elements.length; i < len; i++ ) {
+      var elem = this.elements[i];
+      // filter siblings
+      if ( elem.nodeName === 'IMG' ) {
+        this.addImage( elem );
+      }
+      // find children
+      var childElems = elem.querySelectorAll('img');
+      // concat childElems to filterFound array
+      for ( var j=0, jLen = childElems.length; j < jLen; j++ ) {
+        var img = childElems[j];
+        this.addImage( img );
+      }
+    }
+  };
+
+  /**
+   * @param {Image} img
+   */
+  ImagesLoaded.prototype.addImage = function( img ) {
+    var loadingImage = new LoadingImage( img );
+    this.images.push( loadingImage );
+  };
+
+  ImagesLoaded.prototype.check = function() {
+    var _this = this;
+    var checkedCount = 0;
+    var length = this.images.length;
+    this.hasAnyBroken = false;
+    // complete if no images
+    if ( !length ) {
+      this.complete();
+      return;
+    }
+
+    function onConfirm( image, message ) {
+      if ( _this.options.debug && hasConsole ) {
+        console.log( 'confirm', image, message );
+      }
+
+      _this.progress( image );
+      checkedCount++;
+      if ( checkedCount === length ) {
+        _this.complete();
+      }
+      return true; // bind once
+    }
+
+    for ( var i=0; i < length; i++ ) {
+      var loadingImage = this.images[i];
+      loadingImage.on( 'confirm', onConfirm );
+      loadingImage.check();
+    }
+  };
+
+  ImagesLoaded.prototype.progress = function( image ) {
+    this.hasAnyBroken = this.hasAnyBroken || !image.isLoaded;
+    // HACK - Chrome triggers event before object properties have changed. #83
+    var _this = this;
+    setTimeout( function() {
+      _this.emit( 'progress', _this, image );
+      if ( _this.jqDeferred ) {
+        _this.jqDeferred.notify( _this, image );
+      }
+    });
+  };
+
+  ImagesLoaded.prototype.complete = function() {
+    var eventName = this.hasAnyBroken ? 'fail' : 'done';
+    this.isComplete = true;
+    var _this = this;
+    // HACK - another setTimeout so that confirm happens after progress
+    setTimeout( function() {
+      _this.emit( eventName, _this );
+      _this.emit( 'always', _this );
+      if ( _this.jqDeferred ) {
+        var jqMethod = _this.hasAnyBroken ? 'reject' : 'resolve';
+        _this.jqDeferred[ jqMethod ]( _this );
+      }
+    });
+  };
+
+  // -------------------------- jquery -------------------------- //
+
+  if ( $ ) {
+    $.fn.imagesLoaded = function( options, callback ) {
+      var instance = new ImagesLoaded( this, options, callback );
+      return instance.jqDeferred.promise( $(this) );
+    };
+  }
+
+
+  // --------------------------  -------------------------- //
+
+  var cache = {};
+
+  function LoadingImage( img ) {
+    this.img = img;
+  }
+
+  LoadingImage.prototype = new EventEmitter();
+
+  LoadingImage.prototype.check = function() {
+    // first check cached any previous images that have same src
+    var cached = cache[ this.img.src ];
+    if ( cached ) {
+      this.useCached( cached );
+      return;
+    }
+    // add this to cache
+    cache[ this.img.src ] = this;
+
+    // If complete is true and browser supports natural sizes,
+    // try to check for image status manually.
+    if ( this.img.complete && this.img.naturalWidth !== undefined ) {
+      // report based on naturalWidth
+      this.confirm( this.img.naturalWidth !== 0, 'naturalWidth' );
+      return;
+    }
+
+    // If none of the checks above matched, simulate loading on detached element.
+    var proxyImage = this.proxyImage = new Image();
+    eventie.bind( proxyImage, 'load', this );
+    eventie.bind( proxyImage, 'error', this );
+    proxyImage.src = this.img.src;
+  };
+
+  LoadingImage.prototype.useCached = function( cached ) {
+    if ( cached.isConfirmed ) {
+      this.confirm( cached.isLoaded, 'cached was confirmed' );
+    } else {
+      var _this = this;
+      cached.on( 'confirm', function( image ) {
+        _this.confirm( image.isLoaded, 'cache emitted confirmed' );
+        return true; // bind once
+      });
+    }
+  };
+
+  LoadingImage.prototype.confirm = function( isLoaded, message ) {
+    this.isConfirmed = true;
+    this.isLoaded = isLoaded;
+    this.emit( 'confirm', this, message );
+  };
+
+  // trigger specified handler for event type
+  LoadingImage.prototype.handleEvent = function( event ) {
+    var method = 'on' + event.type;
+    if ( this[ method ] ) {
+      this[ method ]( event );
+    }
+  };
+
+  LoadingImage.prototype.onload = function() {
+    this.confirm( true, 'onload' );
+    this.unbindProxyEvents();
+  };
+
+  LoadingImage.prototype.onerror = function() {
+    this.confirm( false, 'onerror' );
+    this.unbindProxyEvents();
+  };
+
+  LoadingImage.prototype.unbindProxyEvents = function() {
+    eventie.unbind( this.proxyImage, 'load', this );
+    eventie.unbind( this.proxyImage, 'error', this );
+  };
+
+  // -----  ----- //
+
+  return ImagesLoaded;
+}
+
+// -------------------------- transport -------------------------- //
+
+if ( typeof define === 'function' && define.amd ) {
+  // AMD
+  define( [
+      'eventEmitter/EventEmitter',
+      'eventie/eventie'
+    ],
+    defineImagesLoaded );
+} else {
+  // browser global
+  window.imagesLoaded = defineImagesLoaded(
+    window.EventEmitter,
+    window.eventie
+  );
+}
+
+})( window );;
+ /*!
+ * Plugin for skrollr.
+ * This plugin makes hashlinks scroll nicely to their target position.
+ *
+ * Alexander Prinzhorn - https://github.com/Prinzhorn/skrollr
+ *
+ * Free to use under terms of MIT license
+ */
+(function(document, window) {
+	'use strict';
+
+	var DEFAULT_DURATION = 500;
+	var DEFAULT_EASING = 'sqrt';
+	var DEFAULT_SCALE = 1;
+
+	var MENU_TOP_ATTR = 'data-menu-top';
+	var MENU_OFFSET_ATTR = 'data-menu-offset';
+
+	var skrollr = window.skrollr;
+	var history = window.history;
+	var supportsHistory = !!history.pushState;
+
+	/*
+		Since we are using event bubbling, the element that has been clicked
+		might not acutally be the link but a child.
+	*/
+	var findParentLink = function(element) {
+		//We reached the top, no link found.
+		if(element === document) {
+			return false;
+		}
+
+		//Yay, it's a link!
+		if(element.tagName.toUpperCase() === 'A') {
+			return element;
+		}
+
+		//Maybe the parent is a link.
+		return findParentLink(element.parentNode);
+	};
+
+	/*
+		Handle the click event on the document.
+	*/
+	var handleClick = function(e) {
+		//Only handle left click.
+		if(e.which !== 1 && e.button !== 0) {
+			return;
+		}
+
+		var link = findParentLink(e.target);
+
+		//The click did not happen inside a link.
+		if(!link) {
+			return;
+		}
+
+		if(handleLink(link)) {
+			e.preventDefault();
+		}
+	};
+
+	/*
+		Handles the click on a link. May be called without an actual click event.
+		When the fake flag is set, the link won't change the url and the position won't be animated.
+	*/
+	var handleLink = function(link, fake) {
+		//Don't use the href property (link.href) because it contains the absolute url.
+		var href = link.getAttribute('href');
+
+		//Check if it's a hashlink.
+		if(!/^#/.test(href)) {
+			return false;
+		}
+
+		//Now get the targetTop to scroll to.
+		var targetTop;
+
+		var menuTop;
+
+		//If there's a handleLink function, it overrides the actual anchor offset.
+		if(_handleLink) {
+			menuTop = _handleLink(link);
+		}
+		//If there's a data-menu-top attribute and no handleLink function, it overrides the actual anchor offset.
+		else {
+			menuTop = link.getAttribute(MENU_TOP_ATTR);
+		}
+
+		if(menuTop !== null) {
+			//Is it a percentage offset?
+			if(/p$/.test(menuTop)) {
+				targetTop = (menuTop.slice(0, -1) / 100) * document.documentElement.clientHeight;
+			} else {
+				targetTop = +menuTop * _scale;
+			}
+		} else {
+			var scrollTarget = document.getElementById(href.substr(1));
+
+			//Ignore the click if no target is found.
+			if(!scrollTarget) {
+				return false;
+			}
+
+			targetTop = _skrollrInstance.relativeToAbsolute(scrollTarget, 'top', 'top');
+
+			var menuOffset = scrollTarget.getAttribute(MENU_OFFSET_ATTR);
+
+			if(menuOffset !== null) {
+				targetTop += +menuOffset;
+			}
+		}
+
+		if(supportsHistory && !fake) {
+			history.pushState({top: targetTop}, '', href);
+		}
+
+		//Now finally scroll there.
+		if(_animate && !fake) {
+			_skrollrInstance.animateTo(targetTop, {
+				duration: _duration(_skrollrInstance.getScrollTop(), targetTop),
+				easing: _easing
+			});
+		} else {
+			defer(function() {
+				_skrollrInstance.setScrollTop(targetTop);
+			});
+		}
+
+		return true;
+	};
+
+	var jumpStraightToHash = function() {
+		if(window.location.hash && document.querySelector) {
+			var link = document.querySelector('a[href="' + window.location.hash + '"]');
+
+			if(link) {
+				handleLink(link, true);
+			}
+		}
+	};
+
+	var defer = function(fn) {
+		window.setTimeout(fn, 1);
+	};
+
+	/*
+		Global menu function accessible through window.skrollr.menu.init.
+	*/
+	skrollr.menu = {};
+	skrollr.menu.init = function(skrollrInstance, options) {
+		_skrollrInstance = skrollrInstance;
+
+		options = options || {};
+
+		_easing = options.easing || DEFAULT_EASING;
+		_animate = options.animate !== false;
+		_duration = options.duration || DEFAULT_DURATION;
+		_handleLink = options.handleLink;
+		_scale = options.scale || DEFAULT_SCALE;
+
+		if(typeof _duration === 'number') {
+			_duration = (function(duration) {
+				return function() {
+					return duration;
+				};
+			}(_duration));
+		}
+
+		//Use event bubbling and attach a single listener to the document.
+		skrollr.addEvent(document, 'click', handleClick);
+
+		if(supportsHistory) {
+			skrollr.addEvent(window, 'popstate', function(e) {
+				var state = e.state || {};
+				var top = state.top || 0;
+
+				defer(function() {
+					_skrollrInstance.setScrollTop(top);
+				});
+			}, false);
+		}
+
+		jumpStraightToHash();
+	};
+
+	//Expose the handleLink function to be able to programmatically trigger clicks.
+	skrollr.menu.click = function(link) {
+		//We're not assigning it directly to `click` because of the second ("private") parameter.
+		handleLink(link);
+	};
+
+	//Private reference to the initialized skrollr.
+	var _skrollrInstance;
+
+	var _easing;
+	var _duration;
+	var _animate;
+	var _handleLink;
+	var _scale;
+
+	//In case the page was opened with a hash, prevent jumping to it.
+	//http://stackoverflow.com/questions/3659072/jquery-disable-anchor-jump-when-loading-a-page
+	defer(function() {
+		if(window.location.hash) {
+			window.scrollTo(0, 0);
+		}
+	});
+}(document, window));
+;
+/*!
+ * enquire.js v2.1.2 - Awesome Media Queries in JavaScript
+ * Copyright (c) 2014 Nick Williams - http://wicky.nillia.ms/enquire.js
+ * License: MIT (http://www.opensource.org/licenses/mit-license.php)
+ */
+
+;(function (name, context, factory) {
+	var matchMedia = window.matchMedia;
+
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = factory(matchMedia);
+	}
+	else if (typeof define === 'function' && define.amd) {
+		define(function() {
+			return (context[name] = factory(matchMedia));
+		});
+	}
+	else {
+		context[name] = factory(matchMedia);
+	}
+}('enquire', this, function (matchMedia) {
+
+	'use strict';
+
+    /*jshint unused:false */
+    /**
+     * Helper function for iterating over a collection
+     *
+     * @param collection
+     * @param fn
+     */
+    function each(collection, fn) {
+        var i      = 0,
+            length = collection.length,
+            cont;
+
+        for(i; i < length; i++) {
+            cont = fn(collection[i], i);
+            if(cont === false) {
+                break; //allow early exit
+            }
+        }
+    }
+
+    /**
+     * Helper function for determining whether target object is an array
+     *
+     * @param target the object under test
+     * @return {Boolean} true if array, false otherwise
+     */
+    function isArray(target) {
+        return Object.prototype.toString.apply(target) === '[object Array]';
+    }
+
+    /**
+     * Helper function for determining whether target object is a function
+     *
+     * @param target the object under test
+     * @return {Boolean} true if function, false otherwise
+     */
+    function isFunction(target) {
+        return typeof target === 'function';
+    }
+
+    /**
+     * Delegate to handle a media query being matched and unmatched.
+     *
+     * @param {object} options
+     * @param {function} options.match callback for when the media query is matched
+     * @param {function} [options.unmatch] callback for when the media query is unmatched
+     * @param {function} [options.setup] one-time callback triggered the first time a query is matched
+     * @param {boolean} [options.deferSetup=false] should the setup callback be run immediately, rather than first time query is matched?
+     * @constructor
+     */
+    function QueryHandler(options) {
+        this.options = options;
+        !options.deferSetup && this.setup();
+    }
+    QueryHandler.prototype = {
+
+        /**
+         * coordinates setup of the handler
+         *
+         * @function
+         */
+        setup : function() {
+            if(this.options.setup) {
+                this.options.setup();
+            }
+            this.initialised = true;
+        },
+
+        /**
+         * coordinates setup and triggering of the handler
+         *
+         * @function
+         */
+        on : function() {
+            !this.initialised && this.setup();
+            this.options.match && this.options.match();
+        },
+
+        /**
+         * coordinates the unmatch event for the handler
+         *
+         * @function
+         */
+        off : function() {
+            this.options.unmatch && this.options.unmatch();
+        },
+
+        /**
+         * called when a handler is to be destroyed.
+         * delegates to the destroy or unmatch callbacks, depending on availability.
+         *
+         * @function
+         */
+        destroy : function() {
+            this.options.destroy ? this.options.destroy() : this.off();
+        },
+
+        /**
+         * determines equality by reference.
+         * if object is supplied compare options, if function, compare match callback
+         *
+         * @function
+         * @param {object || function} [target] the target for comparison
+         */
+        equals : function(target) {
+            return this.options === target || this.options.match === target;
+        }
+
+    };
+    /**
+     * Represents a single media query, manages it's state and registered handlers for this query
+     *
+     * @constructor
+     * @param {string} query the media query string
+     * @param {boolean} [isUnconditional=false] whether the media query should run regardless of whether the conditions are met. Primarily for helping older browsers deal with mobile-first design
+     */
+    function MediaQuery(query, isUnconditional) {
+        this.query = query;
+        this.isUnconditional = isUnconditional;
+        this.handlers = [];
+        this.mql = matchMedia(query);
+
+        var self = this;
+        this.listener = function(mql) {
+            self.mql = mql;
+            self.assess();
+        };
+        this.mql.addListener(this.listener);
+    }
+    MediaQuery.prototype = {
+
+        /**
+         * add a handler for this query, triggering if already active
+         *
+         * @param {object} handler
+         * @param {function} handler.match callback for when query is activated
+         * @param {function} [handler.unmatch] callback for when query is deactivated
+         * @param {function} [handler.setup] callback for immediate execution when a query handler is registered
+         * @param {boolean} [handler.deferSetup=false] should the setup callback be deferred until the first time the handler is matched?
+         */
+        addHandler : function(handler) {
+            var qh = new QueryHandler(handler);
+            this.handlers.push(qh);
+
+            this.matches() && qh.on();
+        },
+
+        /**
+         * removes the given handler from the collection, and calls it's destroy methods
+         *
+         * @param {object || function} handler the handler to remove
+         */
+        removeHandler : function(handler) {
+            var handlers = this.handlers;
+            each(handlers, function(h, i) {
+                if(h.equals(handler)) {
+                    h.destroy();
+                    return !handlers.splice(i,1); //remove from array and exit each early
+                }
+            });
+        },
+
+        /**
+         * Determine whether the media query should be considered a match
+         *
+         * @return {Boolean} true if media query can be considered a match, false otherwise
+         */
+        matches : function() {
+            return this.mql.matches || this.isUnconditional;
+        },
+
+        /**
+         * Clears all handlers and unbinds events
+         */
+        clear : function() {
+            each(this.handlers, function(handler) {
+                handler.destroy();
+            });
+            this.mql.removeListener(this.listener);
+            this.handlers.length = 0; //clear array
+        },
+
+        /*
+         * Assesses the query, turning on all handlers if it matches, turning them off if it doesn't match
+         */
+        assess : function() {
+            var action = this.matches() ? 'on' : 'off';
+
+            each(this.handlers, function(handler) {
+                handler[action]();
+            });
+        }
+    };
+    /**
+     * Allows for registration of query handlers.
+     * Manages the query handler's state and is responsible for wiring up browser events
+     *
+     * @constructor
+     */
+    function MediaQueryDispatch () {
+        if(!matchMedia) {
+            throw new Error('matchMedia not present, legacy browsers require a polyfill');
+        }
+
+        this.queries = {};
+        this.browserIsIncapable = !matchMedia('only all').matches;
+    }
+
+    MediaQueryDispatch.prototype = {
+
+        /**
+         * Registers a handler for the given media query
+         *
+         * @param {string} q the media query
+         * @param {object || Array || Function} options either a single query handler object, a function, or an array of query handlers
+         * @param {function} options.match fired when query matched
+         * @param {function} [options.unmatch] fired when a query is no longer matched
+         * @param {function} [options.setup] fired when handler first triggered
+         * @param {boolean} [options.deferSetup=false] whether setup should be run immediately or deferred until query is first matched
+         * @param {boolean} [shouldDegrade=false] whether this particular media query should always run on incapable browsers
+         */
+        register : function(q, options, shouldDegrade) {
+            var queries         = this.queries,
+                isUnconditional = shouldDegrade && this.browserIsIncapable;
+
+            if(!queries[q]) {
+                queries[q] = new MediaQuery(q, isUnconditional);
+            }
+
+            //normalise to object in an array
+            if(isFunction(options)) {
+                options = { match : options };
+            }
+            if(!isArray(options)) {
+                options = [options];
+            }
+            each(options, function(handler) {
+                if (isFunction(handler)) {
+                    handler = { match : handler };
+                }
+                queries[q].addHandler(handler);
+            });
+
+            return this;
+        },
+
+        /**
+         * unregisters a query and all it's handlers, or a specific handler for a query
+         *
+         * @param {string} q the media query to target
+         * @param {object || function} [handler] specific handler to unregister
+         */
+        unregister : function(q, handler) {
+            var query = this.queries[q];
+
+            if(query) {
+                if(handler) {
+                    query.removeHandler(handler);
+                }
+                else {
+                    query.clear();
+                    delete this.queries[q];
+                }
+            }
+
+            return this;
+        }
+    };
+
+	return new MediaQueryDispatch();
+
+}));;
+( function( $ ) {
+
+    // Setup variables
+    $window = $(window);
+    $slide = $('.slide');
+    $body = $('body');
+
+    //FadeIn all sections
+    $body.imagesLoaded( function() {
+        setTimeout(function() {
+
+              // Resize sections
+              adjustWindow();
+
+              // Fade in sections
+              $body.removeClass('loading').addClass('loaded');
+
+        }, 800);
+    });
+
+    function adjustWindow(){
+
+        // Get window size
+        winH = $window.height();
+        winW = $window.width();
+
+        // Keep minimum height 550
+        if(winH <= 550) {
+            winH = 550;
+        }
+
+        // Init Skrollr for 768 and up
+        if( winW >= 768) {
+
+            // Init Skrollr
+            var s = skrollr.init({
+                forceHeight: false,
+            });
+
+            // Resize our slides
+            $slide.height(winH);
+
+            s.refresh($('.slide'));
+
+            //The options (second parameter) are all optional. The values shown are the default values.
+            skrollr.menu.init(s, {} );
+
+        } else {
+
+            // Init Skrollr
+            var s = skrollr.init();
+            s.destroy();
+        }
+
+    }
+
+    function initAdjustWindow() {
+        return {
+            match : function() {
+                adjustWindow();
+            },
+            unmatch : function() {
+                adjustWindow();
+            }
+        };
+    }
+
+    enquire.register("screen and (min-width : 768x)", initAdjustWindow(), false);
+
+} )( jQuery );
+;
+(function($) {
+
+    $(document).ready(function() {
+        function showSection() {
+
+            var menu = $('#mobile-link');
+            var menuShow = $('#mobile-block');
+
+            function switchClass($myvar) {
+                if ($myvar.hasClass('active')) {
+                    $myvar.removeClass('active');
+                } else {
+                    $myvar.addClass('active');
+                }
+            }
+
+            menu.on('click', function() {
+                switchClass($(this));
+                menuShow.slideToggle();
+            });
+
+        }
+
+        $(window).on('load', showSection);
+    });
+
+        /**
+    * Navigation sub menu show and hide
+    *
+    * Show sub menus with an arrow click to work across all devices
+    * This switches classes and changes the genericon.
+    * Note: Props Espied for the aria addition
+    *
+    */
+    $( '.main-navigation .page_item_has_children > a, .main-navigation .menu-item-has-children > a' ).append( '<div class="showsub-toggle" aria-expanded="false"></div>' );
+
+    $( '.showsub-toggle' ).click( function( e ) {
+        e.preventDefault();
+        $( this ).toggleClass( 'sub-on' );
+        $( this ).parent().next( '.children, .sub-menu' ).toggleClass( 'sub-on' );
+        $( this ).attr( 'aria-expanded', $( this ).attr( 'aria-expanded' ) == 'false' ? 'true' : 'false');
+    } );
+
+})(jQuery);
+
+(function($) {
+    var $window = $(window);
+    var nav = $('#masthead');
+    $window.scroll(function(){
+    if ($window.scrollTop() >= 300) {
+            nav.addClass('fixed-header');
+        }
+        else {
+            nav.removeClass('fixed-header');
+        }
+    });
+
+})(jQuery);;
+/*jslint indent: 2, browser: true, bitwise: true, plusplus: true */
+
+/*! Copyright Twitter Inc. and other contributors. Licensed under MIT *//*
+https://github.com/twitter/twemoji/blob/gh-pages/LICENSE
+*/
+
+// WARNING:   this file is generated automatically via
+//            `node twemoji-generator.js`
+//            please update its `createTwemoji` function
+//            at the bottom of the same file instead.
+var twemoji = (function ( ) {
+  'use strict';
+
+  /*jshint maxparams:4 */
+
+  var
+    // the exported module object
+    twemoji = {
+
+
+    /////////////////////////
+    //      properties     //
+    /////////////////////////
+
+      // default assets url, by default will be Twitter Inc. CDN
+      base: (location.protocol === 'https:' ? 'https:' : 'http:') +
+            '//twemoji.maxcdn.com/',
+
+      // default assets file extensions, by default '.png'
+      ext: '.svg',
+
+      // default assets/folder size, by default "36x36"
+      // available via Twitter CDN: 16, 36, 72
+      size: 'svg',
+
+      // basic utilities / helpers to convert code points
+      // to JavaScript surrogates and vice versa
+      convert: {
+
+        /**
+         * Given an HEX codepoint, returns UTF16 surrogate pairs.
+         *
+         * @param   string  generic codepoint, i.e. '1F4A9'
+         * @return  string  codepoint transformed into utf16 surrogates pair,
+         *          i.e. \uD83D\uDCA9
+         *
+         * @example
+         *  twemoji.convert.fromCodePoint('1f1e8');
+         *  // "\ud83c\udde8"
+         *
+         *  '1f1e8-1f1f3'.split('-').map(twemoji.convert.fromCodePoint).join('')
+         *  // "\ud83c\udde8\ud83c\uddf3"
+         */
+        fromCodePoint: fromCodePoint,
+
+        /**
+         * Given UTF16 surrogate pairs, returns the equivalent HEX codepoint.
+         *
+         * @param   string  generic utf16 surrogates pair, i.e. \uD83D\uDCA9
+         * @param   string  optional separator for double code points, default='-'
+         * @return  string  utf16 transformed into codepoint, i.e. '1F4A9'
+         *
+         * @example
+         *  twemoji.convert.toCodePoint('\ud83c\udde8\ud83c\uddf3');
+         *  // "1f1e8-1f1f3"
+         *
+         *  twemoji.convert.toCodePoint('\ud83c\udde8\ud83c\uddf3', '~');
+         *  // "1f1e8~1f1f3"
+         */
+        toCodePoint: toCodePoint
+      },
+
+
+    /////////////////////////
+    //       methods       //
+    /////////////////////////
+
+      /**
+       * User first: used to remove missing images
+       * preserving the original text intent when
+       * a fallback for network problems is desired.
+       * Automatically added to Image nodes via DOM
+       * It could be recycled for string operations via:
+       *  $('img.emoji').on('error', twemoji.onerror)
+       */
+      onerror: function onerror() {
+        if (this.parentNode) {
+          this.parentNode.replaceChild(createText(this.alt), this);
+        }
+      },
+
+      /**
+       * Main method/logic to generate either <img> tags or HTMLImage nodes.
+       *  "emojify" a generic text or DOM Element.
+       *
+       * @overloads
+       *
+       * String replacement for `innerHTML` or server side operations
+       *  twemoji.parse(string);
+       *  twemoji.parse(string, Function);
+       *  twemoji.parse(string, Object);
+       *
+       * HTMLElement tree parsing for safer operations over existing DOM
+       *  twemoji.parse(HTMLElement);
+       *  twemoji.parse(HTMLElement, Function);
+       *  twemoji.parse(HTMLElement, Object);
+       *
+       * @param   string|HTMLElement  the source to parse and enrich with emoji.
+       *
+       *          string              replace emoji matches with <img> tags.
+       *                              Mainly used to inject emoji via `innerHTML`
+       *                              It does **not** parse the string or validate it,
+       *                              it simply replaces found emoji with a tag.
+       *                              NOTE: be sure this won't affect security.
+       *
+       *          HTMLElement         walk through the DOM tree and find emoji
+       *                              that are inside **text node only** (nodeType === 3)
+       *                              Mainly used to put emoji in already generated DOM
+       *                              without compromising surrounding nodes and
+       *                              **avoiding** the usage of `innerHTML`.
+       *                              NOTE: Using DOM elements instead of strings should
+       *                              improve security without compromising too much
+       *                              performance compared with a less safe `innerHTML`.
+       *
+       * @param   Function|Object  [optional]
+       *                              either the callback that will be invoked or an object
+       *                              with all properties to use per each found emoji.
+       *
+       *          Function            if specified, this will be invoked per each emoji
+       *                              that has been found through the RegExp except
+       *                              those follwed by the invariant \uFE0E ("as text").
+       *                              Once invoked, parameters will be:
+       *
+       *                                codePoint:string  the lower case HEX code point
+       *                                                  i.e. "1f4a9"
+       *
+       *                                options:Object    all info for this parsing operation
+       *
+       *                                variant:char      the optional \uFE0F ("as image")
+       *                                                  variant, in case this info
+       *                                                  is anyhow meaningful.
+       *                                                  By default this is ignored.
+       *
+       *                              If such callback will return a falsy value instead
+       *                              of a valid `src` to use for the image, nothing will
+       *                              actually change for that specific emoji.
+       *
+       *
+       *          Object              if specified, an object containing the following properties
+       *
+       *            callback   Function  the callback to invoke per each found emoji.
+       *            base       string    the base url, by default twemoji.base
+       *            ext        string    the image extension, by default twemoji.ext
+       *            size       string    the assets size, by default twemoji.size
+       *
+       * @example
+       *
+       *  twemoji.parse("I \u2764\uFE0F emoji!");
+       *  // I <img class="emoji" draggable="false" alt="❤️" src="/assets/2764.gif"> emoji!
+       *
+       *
+       *  twemoji.parse("I \u2764\uFE0F emoji!", function(icon, options, variant) {
+       *    return '/assets/' + icon + '.gif';
+       *  });
+       *  // I <img class="emoji" draggable="false" alt="❤️" src="/assets/2764.gif"> emoji!
+       *
+       *
+       * twemoji.parse("I \u2764\uFE0F emoji!", {
+       *   size: 72,
+       *   callback: function(icon, options, variant) {
+       *     return '/assets/' + options.size + '/' + icon + options.ext;
+       *   }
+       * });
+       *  // I <img class="emoji" draggable="false" alt="❤️" src="/assets/72x72/2764.png"> emoji!
+       *
+       */
+      parse: parse,
+
+      /**
+       * Given a string, invokes the callback argument
+       *  per each emoji found in such string.
+       * This is the most raw version used by
+       *  the .parse(string) method itself.
+       *
+       * @param   string    generic string to parse
+       * @param   Function  a generic callback that will be
+       *                    invoked to replace the content.
+       *                    This calback wil receive standard
+       *                    String.prototype.replace(str, callback)
+       *                    arguments such:
+       *  callback(
+       *    match,  // the emoji match
+       *    icon,   // the emoji text (same as text)
+       *    variant // either '\uFE0E' or '\uFE0F', if present
+       *  );
+       *
+       *                    and others commonly received via replace.
+       *
+       *  NOTE: When the variant \uFE0E is found, remember this is an explicit intent
+       *  from the user: the emoji should **not** be replaced with an image.
+       *  In \uFE0F case one, it's the opposite, it should be graphic.
+       *  This utility convetion is that only \uFE0E are not translated into images.
+       */
+      replace: replace,
+
+      /**
+       * Simplify string tests against emoji.
+       *
+       * @param   string  some text that might contain emoji
+       * @return  boolean true if any emoji was found, false otherwise.
+       *
+       * @example
+       *
+       *  if (twemoji.test(someContent)) {
+       *    console.log("emoji All The Things!");
+       *  }
+       */
+      test: test
+    },
+
+    // RegExp based on emoji's official Unicode standards
+    // http://www.unicode.org/Public/UNIDATA/EmojiSources.txt
+    re = /((?:\ud83c\udde8\ud83c\uddf3|\ud83c\uddfa\ud83c\uddf8|\ud83c\uddf7\ud83c\uddfa|\ud83c\uddf0\ud83c\uddf7|\ud83c\uddef\ud83c\uddf5|\ud83c\uddee\ud83c\uddf9|\ud83c\uddec\ud83c\udde7|\ud83c\uddeb\ud83c\uddf7|\ud83c\uddea\ud83c\uddf8|\ud83c\udde9\ud83c\uddea|\u0039\u20e3|\u0038\u20e3|\u0037\u20e3|\u0036\u20e3|\u0035\u20e3|\u0034\u20e3|\u0033\u20e3|\u0032\u20e3|\u0031\u20e3|\u0030\u20e3|\u0023\u20e3|\ud83d\udeb3|\ud83d\udeb1|\ud83d\udeb0|\ud83d\udeaf|\ud83d\udeae|\ud83d\udea6|\ud83d\udea3|\ud83d\udea1|\ud83d\udea0|\ud83d\ude9f|\ud83d\ude9e|\ud83d\ude9d|\ud83d\ude9c|\ud83d\ude9b|\ud83d\ude98|\ud83d\ude96|\ud83d\ude94|\ud83d\ude90|\ud83d\ude8e|\ud83d\ude8d|\ud83d\ude8b|\ud83d\ude8a|\ud83d\ude88|\ud83d\ude86|\ud83d\ude82|\ud83d\ude81|\ud83d\ude36|\ud83d\ude34|\ud83d\ude2f|\ud83d\ude2e|\ud83d\ude2c|\ud83d\ude27|\ud83d\ude26|\ud83d\ude1f|\ud83d\ude1b|\ud83d\ude19|\ud83d\ude17|\ud83d\ude15|\ud83d\ude11|\ud83d\ude10|\ud83d\ude0e|\ud83d\ude08|\ud83d\ude07|\ud83d\ude00|\ud83d\udd67|\ud83d\udd66|\ud83d\udd65|\ud83d\udd64|\ud83d\udd63|\ud83d\udd62|\ud83d\udd61|\ud83d\udd60|\ud83d\udd5f|\ud83d\udd5e|\ud83d\udd5d|\ud83d\udd5c|\ud83d\udd2d|\ud83d\udd2c|\ud83d\udd15|\ud83d\udd09|\ud83d\udd08|\ud83d\udd07|\ud83d\udd06|\ud83d\udd05|\ud83d\udd04|\ud83d\udd02|\ud83d\udd01|\ud83d\udd00|\ud83d\udcf5|\ud83d\udcef|\ud83d\udced|\ud83d\udcec|\ud83d\udcb7|\ud83d\udcb6|\ud83d\udcad|\ud83d\udc6d|\ud83d\udc6c|\ud83d\udc65|\ud83d\udc2a|\ud83d\udc16|\ud83d\udc15|\ud83d\udc13|\ud83d\udc10|\ud83d\udc0f|\ud83d\udc0b|\ud83d\udc0a|\ud83d\udc09|\ud83d\udc08|\ud83d\udc07|\ud83d\udc06|\ud83d\udc05|\ud83d\udc04|\ud83d\udc03|\ud83d\udc02|\ud83d\udc01|\ud83d\udc00|\ud83c\udfe4|\ud83c\udfc9|\ud83c\udfc7|\ud83c\udf7c|\ud83c\udf50|\ud83c\udf4b|\ud83c\udf33|\ud83c\udf32|\ud83c\udf1e|\ud83c\udf1d|\ud83c\udf1c|\ud83c\udf1a|\ud83c\udf18|\ud83c\udccf|\ud83c\udd70|\ud83c\udd71|\ud83c\udd7e|\ud83c\udd8e|\ud83c\udd91|\ud83c\udd92|\ud83c\udd93|\ud83c\udd94|\ud83c\udd95|\ud83c\udd96|\ud83c\udd97|\ud83c\udd98|\ud83c\udd99|\ud83c\udd9a|\ud83d\ude0d|\ud83d\udec5|\ud83d\udec4|\ud83d\udec3|\ud83d\udec2|\ud83d\udec1|\ud83d\udebf|\ud83d\udeb8|\ud83d\udeb7|\ud83d\udeb5|\ud83c\ude01|\ud83c\ude02|\ud83c\ude32|\ud83c\ude33|\ud83c\ude34|\ud83c\ude35|\ud83c\ude36|\ud83c\ude37|\ud83c\ude38|\ud83c\ude39|\ud83c\ude3a|\ud83c\ude50|\ud83c\ude51|\ud83c\udf00|\ud83c\udf01|\ud83c\udf02|\ud83c\udf03|\ud83c\udf04|\ud83c\udf05|\ud83c\udf06|\ud83c\udf07|\ud83c\udf08|\ud83c\udf09|\ud83c\udf0a|\ud83c\udf0b|\ud83c\udf0c|\ud83c\udf0f|\ud83c\udf11|\ud83c\udf13|\ud83c\udf14|\ud83c\udf15|\ud83c\udf19|\ud83c\udf1b|\ud83c\udf1f|\ud83c\udf20|\ud83c\udf30|\ud83c\udf31|\ud83c\udf34|\ud83c\udf35|\ud83c\udf37|\ud83c\udf38|\ud83c\udf39|\ud83c\udf3a|\ud83c\udf3b|\ud83c\udf3c|\ud83c\udf3d|\ud83c\udf3e|\ud83c\udf3f|\ud83c\udf40|\ud83c\udf41|\ud83c\udf42|\ud83c\udf43|\ud83c\udf44|\ud83c\udf45|\ud83c\udf46|\ud83c\udf47|\ud83c\udf48|\ud83c\udf49|\ud83c\udf4a|\ud83c\udf4c|\ud83c\udf4d|\ud83c\udf4e|\ud83c\udf4f|\ud83c\udf51|\ud83c\udf52|\ud83c\udf53|\ud83c\udf54|\ud83c\udf55|\ud83c\udf56|\ud83c\udf57|\ud83c\udf58|\ud83c\udf59|\ud83c\udf5a|\ud83c\udf5b|\ud83c\udf5c|\ud83c\udf5d|\ud83c\udf5e|\ud83c\udf5f|\ud83c\udf60|\ud83c\udf61|\ud83c\udf62|\ud83c\udf63|\ud83c\udf64|\ud83c\udf65|\ud83c\udf66|\ud83c\udf67|\ud83c\udf68|\ud83c\udf69|\ud83c\udf6a|\ud83c\udf6b|\ud83c\udf6c|\ud83c\udf6d|\ud83c\udf6e|\ud83c\udf6f|\ud83c\udf70|\ud83c\udf71|\ud83c\udf72|\ud83c\udf73|\ud83c\udf74|\ud83c\udf75|\ud83c\udf76|\ud83c\udf77|\ud83c\udf78|\ud83c\udf79|\ud83c\udf7a|\ud83c\udf7b|\ud83c\udf80|\ud83c\udf81|\ud83c\udf82|\ud83c\udf83|\ud83c\udf84|\ud83c\udf85|\ud83c\udf86|\ud83c\udf87|\ud83c\udf88|\ud83c\udf89|\ud83c\udf8a|\ud83c\udf8b|\ud83c\udf8c|\ud83c\udf8d|\ud83c\udf8e|\ud83c\udf8f|\ud83c\udf90|\ud83c\udf91|\ud83c\udf92|\ud83c\udf93|\ud83c\udfa0|\ud83c\udfa1|\ud83c\udfa2|\ud83c\udfa3|\ud83c\udfa4|\ud83c\udfa5|\ud83c\udfa6|\ud83c\udfa7|\ud83c\udfa8|\ud83c\udfa9|\ud83c\udfaa|\ud83c\udfab|\ud83c\udfac|\ud83c\udfad|\ud83c\udfae|\ud83c\udfaf|\ud83c\udfb0|\ud83c\udfb1|\ud83c\udfb2|\ud83c\udfb3|\ud83c\udfb4|\ud83c\udfb5|\ud83c\udfb6|\ud83c\udfb7|\ud83c\udfb8|\ud83c\udfb9|\ud83c\udfba|\ud83c\udfbb|\ud83c\udfbc|\ud83c\udfbd|\ud83c\udfbe|\ud83c\udfbf|\ud83c\udfc0|\ud83c\udfc1|\ud83c\udfc2|\ud83c\udfc3|\ud83c\udfc4|\ud83c\udfc6|\ud83c\udfc8|\ud83c\udfca|\ud83c\udfe0|\ud83c\udfe1|\ud83c\udfe2|\ud83c\udfe3|\ud83c\udfe5|\ud83c\udfe6|\ud83c\udfe7|\ud83c\udfe8|\ud83c\udfe9|\ud83c\udfea|\ud83c\udfeb|\ud83c\udfec|\ud83c\udfed|\ud83c\udfee|\ud83c\udfef|\ud83c\udff0|\ud83d\udc0c|\ud83d\udc0d|\ud83d\udc0e|\ud83d\udc11|\ud83d\udc12|\ud83d\udc14|\ud83d\udc17|\ud83d\udc18|\ud83d\udc19|\ud83d\udc1a|\ud83d\udc1b|\ud83d\udc1c|\ud83d\udc1d|\ud83d\udc1e|\ud83d\udc1f|\ud83d\udc20|\ud83d\udc21|\ud83d\udc22|\ud83d\udc23|\ud83d\udc24|\ud83d\udc25|\ud83d\udc26|\ud83d\udc27|\ud83d\udc28|\ud83d\udc29|\ud83d\udc2b|\ud83d\udc2c|\ud83d\udc2d|\ud83d\udc2e|\ud83d\udc2f|\ud83d\udc30|\ud83d\udc31|\ud83d\udc32|\ud83d\udc33|\ud83d\udc34|\ud83d\udc35|\ud83d\udc36|\ud83d\udc37|\ud83d\udc38|\ud83d\udc39|\ud83d\udc3a|\ud83d\udc3b|\ud83d\udc3c|\ud83d\udc3d|\ud83d\udc3e|\ud83d\udc40|\ud83d\udc42|\ud83d\udc43|\ud83d\udc44|\ud83d\udc45|\ud83d\udc46|\ud83d\udc47|\ud83d\udc48|\ud83d\udc49|\ud83d\udc4a|\ud83d\udc4b|\ud83d\udc4c|\ud83d\udc4d|\ud83d\udc4e|\ud83d\udc4f|\ud83d\udc50|\ud83d\udc51|\ud83d\udc52|\ud83d\udc53|\ud83d\udc54|\ud83d\udc55|\ud83d\udc56|\ud83d\udc57|\ud83d\udc58|\ud83d\udc59|\ud83d\udc5a|\ud83d\udc5b|\ud83d\udc5c|\ud83d\udc5d|\ud83d\udc5e|\ud83d\udc5f|\ud83d\udc60|\ud83d\udc61|\ud83d\udc62|\ud83d\udc63|\ud83d\udc64|\ud83d\udc66|\ud83d\udc67|\ud83d\udc68|\ud83d\udc69|\ud83d\udc6a|\ud83d\udc6b|\ud83d\udc6e|\ud83d\udc6f|\ud83d\udc70|\ud83d\udc71|\ud83d\udc72|\ud83d\udc73|\ud83d\udc74|\ud83d\udc75|\ud83d\udc76|\ud83d\udc77|\ud83d\udc78|\ud83d\udc79|\ud83d\udc7a|\ud83d\udc7b|\ud83d\udc7c|\ud83d\udc7d|\ud83d\udc7e|\ud83d\udc7f|\ud83d\udc80|\ud83d\udc81|\ud83d\udc82|\ud83d\udc83|\ud83d\udc84|\ud83d\udc85|\ud83d\udc86|\ud83d\udc87|\ud83d\udc88|\ud83d\udc89|\ud83d\udc8a|\ud83d\udc8b|\ud83d\udc8c|\ud83d\udc8d|\ud83d\udc8e|\ud83d\udc8f|\ud83d\udc90|\ud83d\udc91|\ud83d\udc92|\ud83d\udc93|\ud83d\udc94|\ud83d\udc95|\ud83d\udc96|\ud83d\udc97|\ud83d\udc98|\ud83d\udc99|\ud83d\udc9a|\ud83d\udc9b|\ud83d\udc9c|\ud83d\udc9d|\ud83d\udc9e|\ud83d\udc9f|\ud83d\udca0|\ud83d\udca1|\ud83d\udca2|\ud83d\udca3|\ud83d\udca4|\ud83d\udca5|\ud83d\udca6|\ud83d\udca7|\ud83d\udca8|\ud83d\udca9|\ud83d\udcaa|\ud83d\udcab|\ud83d\udcac|\ud83d\udcae|\ud83d\udcaf|\ud83d\udcb0|\ud83d\udcb1|\ud83d\udcb2|\ud83d\udcb3|\ud83d\udcb4|\ud83d\udcb5|\ud83d\udcb8|\ud83d\udcb9|\ud83d\udcba|\ud83d\udcbb|\ud83d\udcbc|\ud83d\udcbd|\ud83d\udcbe|\ud83d\udcbf|\ud83d\udcc0|\ud83d\udcc1|\ud83d\udcc2|\ud83d\udcc3|\ud83d\udcc4|\ud83d\udcc5|\ud83d\udcc6|\ud83d\udcc7|\ud83d\udcc8|\ud83d\udcc9|\ud83d\udcca|\ud83d\udccb|\ud83d\udccc|\ud83d\udccd|\ud83d\udcce|\ud83d\udccf|\ud83d\udcd0|\ud83d\udcd1|\ud83d\udcd2|\ud83d\udcd3|\ud83d\udcd4|\ud83d\udcd5|\ud83d\udcd6|\ud83d\udcd7|\ud83d\udcd8|\ud83d\udcd9|\ud83d\udcda|\ud83d\udcdb|\ud83d\udcdc|\ud83d\udcdd|\ud83d\udcde|\ud83d\udcdf|\ud83d\udce0|\ud83d\udce1|\ud83d\udce2|\ud83d\udce3|\ud83d\udce4|\ud83d\udce5|\ud83d\udce6|\ud83d\udce7|\ud83d\udce8|\ud83d\udce9|\ud83d\udcea|\ud83d\udceb|\ud83d\udcee|\ud83d\udcf0|\ud83d\udcf1|\ud83d\udcf2|\ud83d\udcf3|\ud83d\udcf4|\ud83d\udcf6|\ud83d\udcf7|\ud83d\udcf9|\ud83d\udcfa|\ud83d\udcfb|\ud83d\udcfc|\ud83d\udd03|\ud83d\udd0a|\ud83d\udd0b|\ud83d\udd0c|\ud83d\udd0d|\ud83d\udd0e|\ud83d\udd0f|\ud83d\udd10|\ud83d\udd11|\ud83d\udd12|\ud83d\udd13|\ud83d\udd14|\ud83d\udd16|\ud83d\udd17|\ud83d\udd18|\ud83d\udd19|\ud83d\udd1a|\ud83d\udd1b|\ud83d\udd1c|\ud83d\udd1d|\ud83d\udd1e|\ud83d\udd1f|\ud83d\udd20|\ud83d\udd21|\ud83d\udd22|\ud83d\udd23|\ud83d\udd24|\ud83d\udd25|\ud83d\udd26|\ud83d\udd27|\ud83d\udd28|\ud83d\udd29|\ud83d\udd2a|\ud83d\udd2b|\ud83d\udd2e|\ud83d\udd2f|\ud83d\udd30|\ud83d\udd31|\ud83d\udd32|\ud83d\udd33|\ud83d\udd34|\ud83d\udd35|\ud83d\udd36|\ud83d\udd37|\ud83d\udd38|\ud83d\udd39|\ud83d\udd3a|\ud83d\udd3b|\ud83d\udd3c|\ud83d\udd3d|\ud83d\udd50|\ud83d\udd51|\ud83d\udd52|\ud83d\udd53|\ud83d\udd54|\ud83d\udd55|\ud83d\udd56|\ud83d\udd57|\ud83d\udd58|\ud83d\udd59|\ud83d\udd5a|\ud83d\udd5b|\ud83d\uddfb|\ud83d\uddfc|\ud83d\uddfd|\ud83d\uddfe|\ud83d\uddff|\ud83d\ude01|\ud83d\ude02|\ud83d\ude03|\ud83d\ude04|\ud83d\ude05|\ud83d\ude06|\ud83d\ude09|\ud83d\ude0a|\ud83d\ude0b|\ud83d\ude0c|\ud83d\udeb4|\ud83d\ude0f|\ud83d\ude12|\ud83d\ude13|\ud83d\ude14|\ud83d\ude16|\ud83d\ude18|\ud83d\ude1a|\ud83d\ude1c|\ud83d\ude1d|\ud83d\ude1e|\ud83d\ude20|\ud83d\ude21|\ud83d\ude22|\ud83d\ude23|\ud83d\ude24|\ud83d\ude25|\ud83d\ude28|\ud83d\ude29|\ud83d\ude2a|\ud83d\ude2b|\ud83d\ude2d|\ud83d\ude30|\ud83d\ude31|\ud83d\ude32|\ud83d\ude33|\ud83d\ude35|\ud83d\ude37|\ud83d\ude38|\ud83d\ude39|\ud83d\ude3a|\ud83d\ude3b|\ud83d\ude3c|\ud83d\ude3d|\ud83d\ude3e|\ud83d\ude3f|\ud83d\ude40|\ud83d\ude45|\ud83d\ude46|\ud83d\ude47|\ud83d\ude48|\ud83d\ude49|\ud83d\ude4a|\ud83d\ude4b|\ud83d\ude4c|\ud83d\ude4d|\ud83d\ude4e|\ud83d\ude4f|\ud83d\ude80|\ud83d\ude83|\ud83d\ude84|\ud83d\ude85|\ud83d\ude87|\ud83d\ude89|\ud83d\ude8c|\ud83d\ude8f|\ud83d\ude91|\ud83d\ude92|\ud83d\ude93|\ud83d\ude95|\ud83d\ude97|\ud83d\ude99|\ud83d\ude9a|\ud83d\udea2|\ud83d\udea4|\ud83d\udea5|\ud83d\udea7|\ud83d\udea8|\ud83d\udea9|\ud83d\udeaa|\ud83d\udeab|\ud83d\udeac|\ud83d\udead|\ud83d\udeb2|\ud83d\udeb6|\ud83d\udeb9|\ud83d\udeba|\ud83d\udebb|\ud83d\udebc|\ud83d\udebd|\ud83d\udebe|\ud83d\udec0|\ud83c\udde6|\ud83c\udde7|\ud83c\udde8|\ud83c\udde9|\ud83c\uddea|\ud83c\uddeb|\ud83c\uddec|\ud83c\udded|\ud83c\uddee|\ud83c\uddef|\ud83c\uddf0|\ud83c\uddf1|\ud83c\uddf2|\ud83c\uddf3|\ud83c\uddf4|\ud83c\uddf5|\ud83c\uddf6|\ud83c\uddf7|\ud83c\uddf8|\ud83c\uddf9|\ud83c\uddfa|\ud83c\uddfb|\ud83c\uddfc|\ud83c\uddfd|\ud83c\uddfe|\ud83c\uddff|\ud83c\udf0d|\ud83c\udf0e|\ud83c\udf10|\ud83c\udf12|\ud83c\udf16|\ud83c\udf17|\ud83c\udf18|\ud83c\udf1a|\ud83c\udf1c|\ud83c\udf1d|\ud83c\udf1e|\ud83c\udf32|\ud83c\udf33|\ud83c\udf4b|\ud83c\udf50|\ud83c\udf7c|\ud83c\udfc7|\ud83c\udfc9|\ud83c\udfe4|\ud83d\udc00|\ud83d\udc01|\ud83d\udc02|\ud83d\udc03|\ud83d\udc04|\ud83d\udc05|\ud83d\udc06|\ud83d\udc07|\ud83d\udc08|\ud83d\udc09|\ud83d\udc0a|\ud83d\udc0b|\ud83d\udc0f|\ud83d\udc10|\ud83d\udc13|\ud83d\udc15|\ud83d\udc16|\ud83d\udc2a|\ud83d\udc65|\ud83d\udc6c|\ud83d\udc6d|\ud83d\udcad|\ud83d\udcb6|\ud83d\udcb7|\ud83d\udcec|\ud83d\udced|\ud83d\udcef|\ud83d\udcf5|\ud83d\udd00|\ud83d\udd01|\ud83d\udd02|\ud83d\udd04|\ud83d\udd05|\ud83d\udd06|\ud83d\udd07|\ud83d\udd08|\ud83d\udd09|\ud83d\udd15|\ud83d\udd2c|\ud83d\udd2d|\ud83d\udd5c|\ud83d\udd5d|\ud83d\udd5e|\ud83d\udd5f|\ud83d\udd60|\ud83d\udd61|\ud83d\udd62|\ud83d\udd63|\ud83d\udd64|\ud83d\udd65|\ud83d\udd66|\ud83d\udd67|\ud83d\ude00|\ud83d\ude07|\ud83d\ude08|\ud83d\ude0e|\ud83d\ude10|\ud83d\ude11|\ud83d\ude15|\ud83d\ude17|\ud83d\ude19|\ud83d\ude1b|\ud83d\ude1f|\ud83d\ude26|\ud83d\ude27|\ud83d\ude2c|\ud83d\ude2e|\ud83d\ude2f|\ud83d\ude34|\ud83d\ude36|\ud83d\ude81|\ud83d\ude82|\ud83d\ude86|\ud83d\ude88|\ud83d\ude8a|\ud83d\ude8b|\ud83d\ude8d|\ud83d\ude8e|\ud83d\ude90|\ud83d\ude94|\ud83d\ude96|\ud83d\ude98|\ud83d\ude9b|\ud83d\ude9c|\ud83d\ude9d|\ud83d\ude9e|\ud83d\ude9f|\ud83d\udea0|\ud83d\udea1|\ud83d\udea3|\ud83d\udea6|\ud83d\udeae|\ud83d\udeaf|\ud83d\udeb0|\ud83d\udeb1|\ud83d\udeb3|\ud83d\udeb4|\ud83d\udeb5|\ud83d\udeb7|\ud83d\udeb8|\ud83d\udebf|\ud83d\udec1|\ud83d\udec2|\ud83d\udec3|\ud83d\udec4|\ud83d\udec5|\ud83c\udf17|\ud83c\udf16|\ud83c\udde6|\ud83c\udde7|\ud83c\udde8|\ud83c\udde9|\ud83c\uddea|\ud83c\uddeb|\ud83c\uddec|\ud83c\udded|\ud83c\uddee|\ud83c\uddef|\ud83c\uddf0|\ud83c\uddf1|\ud83c\uddf2|\ud83c\uddf3|\ud83c\uddf4|\ud83c\uddf5|\ud83c\uddf6|\ud83c\uddf7|\ud83c\uddf8|\ud83c\uddf9|\ud83c\uddfa|\ud83c\uddfb|\ud83c\uddfc|\ud83c\uddfd|\ud83c\uddfe|\ud83c\uddff|\ud83c\udf0d|\ud83c\udf0e|\ud83c\udf10|\ud83c\udf12|\ud83c\udf16|\ud83c\udf17|\ud83c\udf18|\ud83c\udf1a|\ud83c\udf1c|\ud83c\udf1d|\ud83c\udf1e|\ud83c\udf32|\ud83c\udf33|\ud83c\udf4b|\ud83c\udf50|\ud83c\udf7c|\ud83c\udfc7|\ud83c\udfc9|\ud83c\udfe4|\ud83d\udc00|\ud83d\udc01|\ud83d\udc02|\ud83d\udc03|\ud83d\udc04|\ud83d\udc05|\ud83d\udc06|\ud83d\udc07|\ud83d\udc08|\ud83d\udc09|\ud83d\udc0a|\ud83d\udc0b|\ud83d\udc0f|\ud83d\udc10|\ud83d\udc13|\ud83d\udc15|\ud83d\udc16|\ud83d\udc2a|\ud83d\udc65|\ud83d\udc6c|\ud83d\udc6d|\ud83d\udcad|\ud83d\udcb6|\ud83d\udcb7|\ud83d\udcec|\ud83d\udced|\ud83d\udcef|\ud83d\udcf5|\ud83d\udd00|\ud83d\udd01|\ud83d\udd02|\ud83d\udd04|\ud83d\udd05|\ud83d\udd06|\ud83d\udd07|\ud83d\udd08|\ud83d\udd09|\ud83d\udd15|\ud83d\udd2c|\ud83d\udd2d|\ud83d\udd5c|\ud83d\udd5d|\ud83d\udd5e|\ud83d\udd5f|\ud83d\udd60|\ud83d\udd61|\ud83d\udd62|\ud83d\udd63|\ud83d\udd64|\ud83d\udd65|\ud83d\udd66|\ud83d\udd67|\ud83d\ude00|\ud83d\ude07|\ud83d\ude08|\ud83d\ude0e|\ud83d\ude10|\ud83d\ude11|\ud83d\ude15|\ud83d\ude17|\ud83d\ude19|\ud83d\ude1b|\ud83d\ude1f|\ud83d\ude26|\ud83d\ude27|\ud83d\ude2c|\ud83d\ude2e|\ud83d\ude2f|\ud83d\ude34|\ud83d\ude36|\ud83d\ude81|\ud83d\ude82|\ud83d\ude86|\ud83d\ude88|\ud83d\ude8a|\ud83d\ude8b|\ud83d\ude8d|\ud83d\ude8e|\ud83d\ude90|\ud83d\ude94|\ud83d\ude96|\ud83d\ude98|\ud83d\ude9b|\ud83d\ude9c|\ud83d\ude9d|\ud83d\ude9e|\ud83d\ude9f|\ud83d\udea0|\ud83d\udea1|\ud83d\udea3|\ud83d\udea6|\ud83d\udeae|\ud83d\udeaf|\ud83d\udeb0|\ud83d\udeb1|\ud83d\udeb3|\ud83d\udeb4|\ud83d\udeb5|\ud83d\udeb7|\ud83d\udeb8|\ud83d\udebf|\ud83d\udec1|\ud83d\udec2|\ud83d\udec3|\ud83d\udec4|\ud83d\udec5|\ud83c\udf12|\ud83c\udf10|\ud83c\udde6|\ud83c\udde7|\ud83c\udde8|\ud83c\udde9|\ud83c\uddea|\ud83c\uddeb|\ud83c\uddec|\ud83c\udded|\ud83c\uddee|\ud83c\uddef|\ud83c\uddf0|\ud83c\uddf1|\ud83c\uddf2|\ud83c\uddf3|\ud83c\uddf4|\ud83c\uddf5|\ud83c\uddf6|\ud83c\uddf7|\ud83c\uddf8|\ud83c\uddf9|\ud83c\uddfa|\ud83c\uddfb|\ud83c\uddfc|\ud83c\uddfd|\ud83c\uddfe|\ud83c\uddff|\ud83c\udf0d|\ud83c\udf0e|\ue50a|\ue50a|\ue50a|\u27bf|\u3030|\u27b0|\u2797|\u2796|\u2795|\u2755|\u2754|\u2753|\u274e|\u274c|\u2728|\u270b|\u270a|\u2705|\u26ce|\u27bf|\u23f3|\u23f0|\u23ec|\u23eb|\u23ea|\u23e9|\u2122|\u27bf|\u00a9|\u00ae)|(?:(?:\ud83c\udc04|\ud83c\udd7f|\ud83c\ude1a|\ud83c\ude2f|\u3299|\u3297|\u303d|\u2b55|\u2b50|\u2b1c|\u2b1b|\u2b07|\u2b06|\u2b05|\u2935|\u2934|\u27a1|\u2764|\u2757|\u2747|\u2744|\u2734|\u2733|\u2716|\u2714|\u2712|\u270f|\u270c|\u2709|\u2708|\u2702|\u26fd|\u26fa|\u26f5|\u26f3|\u26f2|\u26ea|\u26d4|\u26c5|\u26c4|\u26be|\u26bd|\u26ab|\u26aa|\u26a1|\u26a0|\u2693|\u267b|\u2668|\u2666|\u2665|\u2663|\u2660|\u2653|\u2652|\u2651|\u2650|\u264f|\u264e|\u264d|\u264c|\u264b|\u264a|\u2649|\u2648|\u263a|\u261d|\u2615|\u2614|\u2611|\u260e|\u2601|\u2600|\u25fe|\u25fd|\u25fc|\u25fb|\u25c0|\u25b6|\u25ab|\u25aa|\u24c2|\u231b|\u231a|\u21aa|\u21a9|\u2199|\u2198|\u2197|\u2196|\u2195|\u2194|\u2139|\u2049|\u203c|\u267f)([\uFE0E\uFE0F]?)))/g,
+
+    // nodes with type 1 which should **not** be parsed
+    shouldntBeParsed = /IFRAME|NOFRAMES|NOSCRIPT|SCRIPT|STYLE/,
+
+    // just a private shortcut
+    fromCharCode = String.fromCharCode;
+
+  return twemoji;
+
+
+  /////////////////////////
+  //  private functions  //
+  //     declaration     //
+  /////////////////////////
+
+  /**
+   * Shortcut to create text nodes
+   * @param   string  text used to create DOM text node
+   * @return  Node  a DOM node with that text
+   */
+  function createText(text) {
+    return document.createTextNode(text);
+  }
+
+  /**
+   * Default callback used to generate emoji src
+   *  based on Twitter CDN
+   * @param   string    the emoji codepoint string
+   * @param   string    the default size to use, i.e. "36x36"
+   * @param   string    optional "\uFE0F" variant char, ignored by default
+   * @return  string    the image source to use
+   */
+  function defaultImageSrcGenerator(icon, options) {
+    return ''.concat(options.base, options.size, '/', icon, options.ext);
+  }
+
+  /**
+   * Given a generic DOM nodeType 1, walk through all children
+   * and store every nodeType 3 (#text) found in the tree.
+   * @param   Element a DOM Element with probably some text in it
+   * @param   Array the list of previously discovered text nodes
+   * @return  Array same list with new discovered nodes, if any
+   */
+  function grabAllTextNodes(node, allText) {
+    var
+      childNodes = node.childNodes,
+      length = childNodes.length,
+      subnode,
+      nodeType;
+    while (length--) {
+      subnode = childNodes[length];
+      nodeType = subnode.nodeType;
+      // parse emoji only in text nodes
+      if (nodeType === 3) {
+        // collect them to process emoji later
+        allText.push(subnode);
+      }
+      // ignore all nodes that are not type 1 or that
+      // should not be parsed as script, style, and others
+      else if (nodeType === 1 && !shouldntBeParsed.test(subnode.nodeName)) {
+        grabAllTextNodes(subnode, allText);
+      }
+    }
+    return allText;
+  }
+
+  /**
+   * Used to both remove the possible variant
+   *  and to convert utf16 into code points
+   * @param   string    the emoji surrogate pair
+   * @param   string    the optional variant char, if any
+   */
+  function grabTheRightIcon(icon, variant) {
+    // if variant is present as \uFE0F
+    return toCodePoint(
+      variant === '\uFE0F' ?
+        // the icon should not contain it
+        icon.slice(0, -1) :
+        icon
+    );
+  }
+
+  /**
+   * DOM version of the same logic / parser:
+   *  emojify all found sub-text nodes placing images node instead.
+   * @param   Element   generic DOM node with some text in some child node
+   * @param   Object    options  containing info about how to parse
+    *
+    *            .callback   Function  the callback to invoke per each found emoji.
+    *            .base       string    the base url, by default twemoji.base
+    *            .ext        string    the image extension, by default twemoji.ext
+    *            .size       string    the assets size, by default twemoji.size
+    *
+   * @return  Element same generic node with emoji in place, if any.
+   */
+  function parseNode(node, options) {
+    var
+      allText = grabAllTextNodes(node, []),
+      length = allText.length,
+      fragment,
+      subnode,
+      text,
+      match,
+      i,
+      index,
+      img,
+      alt,
+      icon,
+      variant,
+      src;
+    while (length--) {
+      fragment = document.createDocumentFragment();
+      subnode = allText[length];
+      text = subnode.nodeValue;
+      i = 0;
+      while ((match = re.exec(text))) {
+        index = match.index;
+        if (index !== i) {
+          fragment.appendChild(
+            createText(text.slice(i, index))
+          );
+        }
+        alt = match[0];
+        icon = match[1];
+        variant = match[2];
+        i = index + alt.length;
+        if (variant !== '\uFE0E') {
+          src = options.callback(
+            grabTheRightIcon(icon, variant),
+            options,
+            variant
+          );
+          if (src) {
+            img = new Image();
+            img.onerror = twemoji.onerror;
+            img.className = 'emoji';
+            img.setAttribute('draggable', 'false');
+            img.alt = alt;
+            img.src = src;
+          }
+        }
+        fragment.appendChild(img || createText(alt));
+        img = null;
+      }
+      // is there actually anything to replace in here ?
+      if (0 < i) {
+        // any text left to be added ?
+        if (i < text.length) {
+          fragment.appendChild(
+            createText(text.slice(i))
+          );
+        }
+        // replace the text node only, leave intact
+        // anything else surrounding such text
+        subnode.parentNode.replaceChild(fragment, subnode);
+      }
+    }
+    return node;
+  }
+
+  /**
+   * String/HTML version of the same logic / parser:
+   *  emojify a generic text placing images tags instead of surrogates pair.
+   * @param   string    generic string with possibly some emoji in it
+   * @param   Object    options  containing info about how to parse
+   *
+   *            .callback   Function  the callback to invoke per each found emoji.
+   *            .base       string    the base url, by default twemoji.base
+   *            .ext        string    the image extension, by default twemoji.ext
+   *            .size       string    the assets size, by default twemoji.size
+   *
+   * @return  the string with <img tags> replacing all found and parsed emoji
+   */
+  function parseString(str, options) {
+    return replace(str, function (match, icon, variant) {
+      var src;
+      // verify the variant is not the FE0E one
+      // this variant means "emoji as text" and should not
+      // require any action/replacement
+      // http://unicode.org/Public/UNIDATA/StandardizedVariants.html
+      if (variant !== '\uFE0E') {
+        src = options.callback(
+          grabTheRightIcon(icon, variant),
+          options,
+          variant
+        );
+        if (src) {
+          // recycle the match string replacing the emoji
+          // with its image counter part
+          match = '<img '.concat(
+            'class="emoji" ',
+            'draggable="false" ',
+            // needs to preserve user original intent
+            // when variants should be copied and pasted too
+            'alt="',
+            match,
+            '" ',
+            'src="',
+            src,
+            '"',
+            '>'
+          );
+        }
+      }
+      return match;
+    });
+  }
+
+  /**
+   * Given a generic value, creates its squared counterpart if it's a number.
+   *  As example, number 36 will return '36x36'.
+   * @param   any     a generic value.
+   * @return  any     a string representing asset size, i.e. "36x36"
+   *                  only in case the value was a number.
+   *                  Returns initial value otherwise.
+   */
+  function toSizeSquaredAsset(value) {
+    return typeof value === 'number' ?
+      value + 'x' + value :
+      value;
+  }
+
+
+  /////////////////////////
+  //  exported functions //
+  //     declaration     //
+  /////////////////////////
+
+  function fromCodePoint(codepoint) {
+    var code = typeof codepoint === 'string' ?
+          parseInt(codepoint, 16) : codepoint;
+    if (code < 0x10000) {
+      return fromCharCode(code);
+    }
+    code -= 0x10000;
+    return fromCharCode(
+      0xD800 + (code >> 10),
+      0xDC00 + (code & 0x3FF)
+    );
+  }
+
+  function parse(what, how) {
+    if (!how || typeof how === 'function') {
+      how = {callback: how};
+    }
+    // if first argument is string, inject html <img> tags
+    // otherwise use the DOM tree and parse text nodes only
+    return (typeof what === 'string' ? parseString : parseNode)(what, {
+      callback: how.callback || defaultImageSrcGenerator,
+      base:     typeof how.base === 'string' ? how.base : twemoji.base,
+      ext:      how.ext || twemoji.ext,
+      size:     "svg" // toSizeSquaredAsset(how.size || twemoji.size)
+    });
+  }
+
+  function replace(text, callback) {
+    return String(text).replace(re, callback);
+  }
+
+  function test(text) {
+    // IE6 needs a reset before too
+    re.lastIndex = 0;
+    var result = re.test(text);
+    re.lastIndex = 0;
+    return result;
+  }
+
+  function toCodePoint(unicodeSurrogates, sep) {
+    var
+      r = [],
+      c = 0,
+      p = 0,
+      i = 0;
+    while (i < unicodeSurrogates.length) {
+      c = unicodeSurrogates.charCodeAt(i++);
+      if (p) {
+        r.push((0x10000 + ((p - 0xD800) << 10) + (c - 0xDC00)).toString(16));
+        p = 0;
+      } else if (0xD800 <= c && c <= 0xDBFF) {
+        p = c;
+      } else {
+        r.push(c.toString(16));
+      }
+    }
+    return r.join(sep || '-');
+  }
+
+}());
+
+;
+var JetpackEmoji = {
+		EMOJI_SIZE: 72,
+		BASE_URL: '//s0.wp.com/wp-content/mu-plugins/emoji/twemoji/',
+
+        parse: function( element, size, base_url ) {
+            twemoji.parse( element, {
+                size: size || this.EMOJI_SIZE,
+				base: base_url || this.BASE_URL,
+				callback: function(icon, options, variant) {
+					// Ignore some standard characters that TinyMCE recommends in its character map.
+					// https://teamtinker.wordpress.com/2014/10/29/emoji-launch-week/#comment-2103
+					switch ( icon ) {
+						case 'a9':
+						case 'ae':
+						case '2122':
+						case '2194':
+						case '2660':
+						case '2663':
+						case '2665':
+						case '2666':
+							return false;
+					}
+				
+					// directly from twemoji
+					return ''.concat(options.base, options.size, '/', icon, options.ext);
+				}
+            } );
+        }
+}
+;
+(function() {
+    var emoji = {	
+        init: function() {
+			if ( typeof JetpackEmoji === 'undefined' ) {
+				console.error( 'JetpackEmoji not found.' );
+				return;
+			}
+
+			var size, base_url;
+			if ( typeof JetpackEmojiSettings !== 'undefined' ) {
+				size = JetpackEmojiSettings.size || null;
+				base_url = JetpackEmojiSettings.base_url || null;
+			}	
+
+            JetpackEmoji.parse( document.body, size, base_url );
+
+            if ( typeof infiniteScroll !== 'undefined' ) {
+                jQuery( document.body ).on( 'post-load', function( response ) {
+                    // TODO: ideally, we should only target the newly added elements
+                    JetpackEmoji.parse( document.body, size, base_url );
+                } );
+            }
+        }
+    };
+
+    if ( window.addEventListener ) {
+        window.addEventListener( 'load', emoji.init, false );
+    } else if ( window.attachEvent ) {
+        window.attachEvent( 'onload', emoji.init );
+    }
+})();
+;
